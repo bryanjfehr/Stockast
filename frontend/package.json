@@ -1,0 +1,34 @@
+{
+  "name": "frontend",
+  "version": "0.1.0",
+  "dependencies": {
+    "@react-navigation/native": "^7.1.19",
+    "@tanstack/react-query": "^5.90.8",
+    "axios": "^1.13.2",
+    "react-native": "0.80.1",
+    "react-native-async-storage": "^0.0.1",
+    "react-native-charts-wrapper": "^0.6.0",
+    "react-native-echarts": "^0.0.1",
+    "react-native-gifted-charts": "^1.4.65",
+    "react-native-keychain": "^10.0.0",
+    "react-native-svg": "^15.15.0",
+    "react-native-vector-icons": "^10.3.0",
+    "react-native-windows": "^0.80.1"
+  },
+  "scripts": {
+    "windows": "npx @react-native-community/cli run-windows",
+    "test:windows": "jest --config jest.config.windows.js"
+  },
+  "devDependencies": {
+    "@rnx-kit/jest-preset": "^0.1.17",
+    "electron": "^39.2.0",
+    "electron-builder": "^26.0.12"
+  },
+  "react-native-windows": {
+    "init-windows": {
+      "name": "frontend",
+      "namespace": "frontend",
+      "template": "cpp-app"
+    }
+  }
+}

@@ -1,29 +1,22 @@
-import logging
 from .base import BaseStrategy
+import pandas as pd
 
-logging.basicConfig(level=logging.INFO)
+class LongTermStrategy(BaseStrategy):
+    """
+    A long-term strategy for position trading.
+    Uses longer indicator windows (e.g., 1h+ timeframes) and requires
+    stronger momentum confirmation.
+    """
+    def __init__(self, exchange, symbol, timeframe='1h'):
+        super().__init__(exchange, symbol, timeframe)
 
-class LongTerm(BaseStrategy):
-    def __init__(self, exchange, symbol):
-        super().__init__(exchange, symbol, timeframe='1d')
+        # --- Override parameters for long-term trading ---
+        self.macd_fast = 24
+        self.macd_slow = 52
+        self.rsi_period = 28
+        # Higher threshold to confirm major momentum shifts
+        self.momentum_threshold = 2.5
 
-    def generate_signals(self):
-        """
-        Generates signals for long-term trading.
-        Emphasizes 60m/1h trends and MACD/volume.
-        """
-        self.fetch_data()
-        self.compute_indicators()
-
-        # Example Signal Logic (to be refined)
-        # Buy signal: Positive MACD, volume SMA is increasing
-        if (self.df['macdhist'].iloc[-1] > 0 and
-                self.df['volume_sma'].iloc[-1] > self.df['volume_sma'].iloc[-2]):
-            return {'signal': 'buy', 'price': self.df['close'].iloc[-1]}
-
-        # Sell signal: Negative MACD, volume SMA is decreasing
-        if (self.df['macdhist'].iloc[-1] < 0 and
-                self.df['volume_sma'].iloc[-1] < self.df['volume_sma'].iloc[-2]):
-            return {'signal': 'sell', 'price': self.df['close'].iloc[-1]}
-
-        return None
+    def generate_signals(self) -> pd.DataFrame:
+        # Uses the signal logic from the parent BaseStrategy
+        return super().generate_signals()

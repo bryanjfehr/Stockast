@@ -4,3 +4,8 @@ backend/.venv/*
 *.venv
 *.env
 windows_app/*
+*/node_modules/*
+frontend.Package/*
+/windows/*
+frontend/windows/*
+*.log
