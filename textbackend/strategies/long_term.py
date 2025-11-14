@@ -1,27 +1,29 @@
-import pandas as pd
-from typing import Dict, Any
+import logging
 from .base import BaseStrategy
-from ..config import ENTRY_EXIT_TIMEFRAME_LONG
 
-class LongTermStrategy(BaseStrategy):
-    def __init__(self, symbol: str):
-        super().__init__(symbol, ENTRY_EXIT_TIMEFRAME_LONG)
+logging.basicConfig(level=logging.INFO)
 
-    def generate_signals(self, df: pd.DataFrame, indicators: Dict[str, Any]) -> pd.DataFrame:
+class LongTerm(BaseStrategy):
+    def __init__(self, exchange, symbol):
+        super().__init__(exchange, symbol, timeframe='1d')
+
+    def generate_signals(self):
         """
-        Generates trading signals for a long-term strategy.
-        - Buy when RSI crosses above 30.
-        - Sell when RSI crosses below 70.
+        Generates signals for long-term trading.
+        Emphasizes 60m/1h trends and MACD/volume.
         """
-        signals = []
-        rsi = indicators['rsi']
+        self.fetch_data()
+        self.compute_indicators()
 
-        for i in range(1, len(rsi)):
-            # Buy signal
-            if rsi[i] > 30 and rsi[i-1] <= 30:
-                signals.append({'timestamp': df['timestamp'].iloc[i], 'signal': 'buy'})
-            # Sell signal
-            elif rsi[i] < 70 and rsi[i-1] >= 70:
-                signals.append({'timestamp': df['timestamp'].iloc[i], 'signal': 'sell'})
-        
-        return pd.DataFrame(signals)
+        # Example Signal Logic (to be refined)
+        # Buy signal: Positive MACD, volume SMA is increasing
+        if (self.df['macdhist'].iloc[-1] > 0 and
+                self.df['volume_sma'].iloc[-1] > self.df['volume_sma'].iloc[-2]):
+            return {'signal': 'buy', 'price': self.df['close'].iloc[-1]}
+
+        # Sell signal: Negative MACD, volume SMA is decreasing
+        if (self.df['macdhist'].iloc[-1] < 0 and
+                self.df['volume_sma'].iloc[-1] < self.df['volume_sma'].iloc[-2]):
+            return {'signal': 'sell', 'price': self.df['close'].iloc[-1]}
+
+        return None

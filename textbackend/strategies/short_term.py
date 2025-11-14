@@ -1,32 +1,30 @@
-import pandas as pd
-from typing import Dict, Any
+import logging
 from .base import BaseStrategy
-from ..config import ENTRY_EXIT_TIMEFRAME_SHORT
 
-class ShortTermStrategy(BaseStrategy):
-    def __init__(self, symbol: str):
-        super().__init__(symbol, ENTRY_EXIT_TIMEFRAME_SHORT)
+logging.basicConfig(level=logging.INFO)
 
-    def generate_signals(self, df: pd.DataFrame, indicators: Dict[str, Any]) -> pd.DataFrame:
+class ShortTerm(BaseStrategy):
+    def __init__(self, exchange, symbol):
+        super().__init__(exchange, symbol, timeframe='15m')
+
+    def generate_signals(self):
         """
-        Generates trading signals for a short-term strategy.
-        - Buy when MACD crosses above signal line and RSI is below 70.
-        - Sell when MACD crosses below signal line and RSI is above 30.
+        Generates signals for short-term trading.
+        Focuses on 5-15m charts, RSI/KDJ crossovers, and order book imbalance.
         """
-        signals = []
-        macd = indicators['macd']
-        macdsignal = indicators['macdsignal']
-        rsi = indicators['rsi']
+        self.fetch_data()
+        self.compute_indicators()
 
-        # Ensure all indicators have the same length
-        min_len = min(len(macd), len(macdsignal), len(rsi))
-        
-        for i in range(1, min_len):
-            # Buy signal
-            if macd[i] > macdsignal[i] and macd[i-1] <= macdsignal[i-1] and rsi[i] < 70:
-                signals.append({'timestamp': df['timestamp'].iloc[i], 'signal': 'buy'})
-            # Sell signal
-            elif macd[i] < macdsignal[i] and macd[i-1] >= macdsignal[i-1] and rsi[i] > 30:
-                signals.append({'timestamp': df['timestamp'].iloc[i], 'signal': 'sell'})
-        
-        return pd.DataFrame(signals)
+        # Example Signal Logic (to be refined)
+        # Buy signal: RSI crosses above 30, KDJ shows bullish crossover
+        if self.df['rsi'].iloc[-1] > 30 and self.df['rsi'].iloc[-2] <= 30:
+             if self.df['k'].iloc[-1] > self.df['d'].iloc[-1] and self.df['k'].iloc[-2] <= self.df['d'].iloc[-2]:
+                # Further check order book imbalance if possible
+                return {'signal': 'buy', 'price': self.df['close'].iloc[-1]}
+
+        # Sell signal: RSI crosses below 70, KDJ shows bearish crossover
+        if self.df['rsi'].iloc[-1] < 70 and self.df['rsi'].iloc[-2] >= 70:
+            if self.df['k'].iloc[-1] < self.df['d'].iloc[-1] and self.df['k'].iloc[-2] >= self.df['d'].iloc[-2]:
+                return {'signal': 'sell', 'price': self.df['close'].iloc[-1]}
+
+        return None

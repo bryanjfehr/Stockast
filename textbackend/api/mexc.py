@@ -1,40 +1,86 @@
+import logging
 import ccxt
-from typing import List, Dict, Any
-from ..config import MEXC_API_KEY, MEXC_SECRET_KEY, CCXT_RECV_WINDOW
+import time
 
-class MEXCWrapper:
-    def __init__(self):
-        self.exchange = ccxt.mexc({
-            'apiKey': MEXC_API_KEY,
-            'secret': MEXC_SECRET_KEY,
-            'options': {
-                'defaultType': 'spot',
-                'recvWindow': CCXT_RECV_WINDOW,
-            },
-        })
-        self.exchange.load_markets()
+logging.basicConfig(level=logging.INFO)
 
-    def get_spot_symbols(self) -> List[str]:
-        """Fetches all spot symbols from MEXC."""
-        return [s for s in self.exchange.markets if self.exchange.markets[s]['spot']]
+class MexcAPI:
+    def __init__(self, api_key, secret):
+        try:
+            self.exchange = ccxt.mexc({
+                'apiKey': api_key,
+                'secret': secret,
+                'options': {
+                    'recvWindow': 5000
+                }
+            })
+            self.exchange.check_required_credentials()
+            self.balance_cache = None
+            self.balance_cache_time = 0
+        except (ccxt.AuthenticationError, ccxt.ExchangeError) as e:
+            print(f"Error initializing MEXC API: {e}")
+            self.exchange = None
 
-    def fetch_ohlcv(self, symbol: str, timeframe: str, limit: int = 100) -> List[List]:
-        """Fetches OHLCV data for a given symbol and timeframe."""
-        return self.exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
+    def fetch_spot_symbols(self, filter='USDT'):
+        """
+        Fetches spot symbols, optionally filtering by a quote currency.
+        """
+        if not self.exchange:
+            return []
+        try:
+            markets = self.exchange.load_markets()
+            symbols = [
+                s for s in markets
+                if markets[s]['spot']
+                and (not filter or markets[s]['quote'] == filter)
+            ]
+            return symbols
+        except ccxt.ExchangeError as e:
+            print(f"Error fetching symbols: {e}")
+            return []
 
-    def fetch_order_book(self, symbol: str, limit: int = 100) -> Dict[str, Any]:
-        """Fetches the order book for a given symbol."""
-        return self.exchange.fetch_order_book(symbol, limit=limit)
+    def place_order(self, symbol, side, type, amount, price=None):
+        """
+        Places an order.
+        """
+        if not self.exchange:
+            return None
+        try:
+            return self.exchange.create_order(symbol, type, side, amount, price)
+        except ccxt.ExchangeError as e:
+            print(f"Error placing order: {e}")
+            return None
 
-    def create_order(self, symbol: str, order_type: str, side: str, amount: float, price: float = None):
-        """Creates a trade order."""
-        if order_type == 'market':
-            return self.exchange.create_market_order(symbol, side, amount)
-        elif order_type == 'limit':
-            return self.exchange.create_limit_order(symbol, side, amount, price)
-        else:
-            raise ValueError(f"Unsupported order type: {order_type}")
+    def fetch_balances(self):
+        """
+        Fetches the account balance, with caching.
+        """
+        cache_duration = 10  # seconds
+        current_time = time.time()
 
-    def cancel_order(self, order_id: str, symbol: str):
-        """Cancels an existing order."""
-        return self.exchange.cancel_order(order_id, symbol)
+        if self.balance_cache and (current_time - self.balance_cache_time) < cache_duration:
+            return self.balance_cache
+
+        if not self.exchange:
+            return {}
+        try:
+            self.balance_cache = self.exchange.fetch_balance()
+            self.balance_cache_time = current_time
+            return self.balance_cache
+        except ccxt.ExchangeError as e:
+            print(f"Error fetching balance: {e}")
+            return {}
+
+    def get_available_balance(self, asset='USDT'):
+        """
+        Gets the available balance for a specific asset.
+        """
+        balances = self.fetch_balances()
+        return balances.get(asset, {}).get('free', 0)
+
+    def get_balance(self, asset='USDT'):
+        """
+        Gets the total balance for a specific asset.
+        """
+        balances = self.fetch_balances()
+        return balances.get(asset, {}).get('total', 0)

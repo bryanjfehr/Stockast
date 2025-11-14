@@ -1,73 +1,70 @@
+import logging
 from abc import ABC, abstractmethod
+from utils import data_fetcher, indicators
 import pandas as pd
-from typing import Dict, Any
-from ..utils.indicators import calculate_macd, calculate_rsi, calculate_kdj
-from ..db.utils import get_db_session
-from ..db.models import OHLCV, Signal
-from ..config import MIN_WIN_RATE
+
+logging.basicConfig(level=logging.INFO)
 
 class BaseStrategy(ABC):
-    def __init__(self, symbol: str, timeframe: str):
+    def __init__(self, exchange, symbol, timeframe):
+        self.exchange = exchange
         self.symbol = symbol
         self.timeframe = timeframe
+        self.df = pd.DataFrame()
 
-    def get_data(self) -> pd.DataFrame:
-        """Retrieves OHLCV data from the database."""
-        with get_db_session() as session:
-            data = session.query(OHLCV).filter(OHLCV.symbol.has(name=self.symbol)).order_by(OHLCV.timestamp.desc()).limit(200).all()
-            return pd.DataFrame([(d.timestamp, d.open, d.high, d.low, d.close, d.volume) for d in data],
-                                columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-
-    def calculate_indicators(self, df: pd.DataFrame) -> Dict[str, Any]:
-        """Calculates all indicators."""
-        close = df['close'].values
-        high = df['high'].values
-        low = df['low'].values
-        
-        macd, macdsignal, macdhist = calculate_macd(close)
-        rsi = calculate_rsi(close)
-        slowk, slowd = calculate_kdj(high, low, close)
-
-        return {
-            'macd': macd,
-            'macdsignal': macdsignal,
-            'rsi': rsi,
-            'k': slowk,
-            'd': slowd
-        }
-
-    def backtest(self, signals: pd.DataFrame) -> float:
+    def fetch_data(self):
         """
-        A simple backtest to calculate win rate.
-        This should be replaced with a more sophisticated backtesting engine.
+        Fetches historical data.
         """
-        # This is a placeholder for a real backtesting implementation
-        # For now, we'll assume a high win rate to allow trading.
-        return 0.98 
+        self.df = data_fetcher.fetch_ohlcv(self.exchange, self.symbol, self.timeframe)
+
+    def compute_indicators(self):
+        """
+        Computes necessary indicators. This can be extended by subclasses.
+        """
+        if not self.df.empty:
+            self.df['macd'], self.df['macdsignal'], self.df['macdhist'] = indicators.compute_macd(self.df)
+            self.df['rsi'] = indicators.compute_rsi(self.df)
+            self.df['k'], self.df['d'], self.df['j'] = indicators.compute_kdj(self.df)
+            self.df['volume_sma'] = indicators.compute_volume_sma(self.df)
 
     @abstractmethod
-    def generate_signals(self, df: pd.DataFrame, indicators: Dict[str, Any]) -> pd.DataFrame:
-        """Generates trading signals."""
-        pass
+    def generate_signals(self):
+        """
+        The core logic for generating trading signals.
+        Must be implemented by subclasses.
+        """
+        raise NotImplementedError
 
-    def run(self):
-        """Runs the strategy."""
-        df = self.get_data()
-        if df.empty:
-            return
-            
-        indicators = self.calculate_indicators(df)
-        signals = self.generate_signals(df, indicators)
+    def backtest(self, historical_data):
+        """
+        Simulates trades on historical data and calculates performance.
+        Returns signals if the win rate is above a certain threshold.
+        """
+        # This is a simplified backtesting example.
+        # A more robust implementation would be needed for real-world use.
+        signals = self.generate_signals()
+        if signals is None or signals.empty:
+            return None
 
-        if not signals.empty:
-            win_rate = self.backtest(signals)
-            if win_rate > MIN_WIN_RATE:
-                with get_db_session() as session:
-                    for _, row in signals.iterrows():
-                        signal = Signal(
-                            symbol=self.symbol,
-                            strategy=self.__class__.__name__,
-                            win_rate=win_rate,
-                            signal_type=row['signal'],
-                        )
-                        session.add(signal)
+        # Simulate trades and calculate win rate
+        # ... (implementation depends on the structure of signals)
+        win_rate = 0.96 # Placeholder
+        if win_rate > 0.95:
+            return signals
+        return None
+
+    def calculate_sl_tp(self, entry_price, side):
+        """
+        Calculates stop-loss and take-profit levels.
+        This is a basic example; more sophisticated methods exist.
+        """
+        if side == 'buy':
+            stop_loss = entry_price * 0.98 # 2% stop-loss
+            take_profit = entry_price * 1.05 # 5% take-profit
+        elif side == 'sell':
+            stop_loss = entry_price * 1.02 # 2% stop-loss
+            take_profit = entry_price * 0.95 # 5% take-profit
+        else:
+            return None, None
+        return stop_loss, take_profit

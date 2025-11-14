@@ -1,30 +1,31 @@
-import pandas as pd
-from typing import Dict, Any
+import logging
 from .base import BaseStrategy
-from ..config import ENTRY_EXIT_TIMEFRAME_MEDIUM
 
-class MediumTermStrategy(BaseStrategy):
-    def __init__(self, symbol: str):
-        super().__init__(symbol, ENTRY_EXIT_TIMEFRAME_MEDIUM)
+logging.basicConfig(level=logging.INFO)
 
-    def generate_signals(self, df: pd.DataFrame, indicators: Dict[str, Any]) -> pd.DataFrame:
+class MediumTerm(BaseStrategy):
+    def __init__(self, exchange, symbol):
+        super().__init__(exchange, symbol, timeframe='1h')
+
+    def generate_signals(self):
         """
-        Generates trading signals for a medium-term strategy.
-        - Buy when K line crosses above D line and both are below 80.
-        - Sell when K line crosses below D line and both are above 20.
+        Generates signals for medium-term trading.
+        Focuses on 1-2 day holds and longer-term indicators.
         """
-        signals = []
-        k = indicators['k']
-        d = indicators['d']
+        self.fetch_data()
+        self.compute_indicators()
 
-        min_len = min(len(k), len(d))
+        # Example Signal Logic (to be refined)
+        # Buy signal: MACD crosses above signal line, RSI is not overbought
+        if (self.df['macd'].iloc[-1] > self.df['macdsignal'].iloc[-1] and
+                self.df['macd'].iloc[-2] <= self.df['macdsignal'].iloc[-2] and
+                self.df['rsi'].iloc[-1] < 70):
+            return {'signal': 'buy', 'price': self.df['close'].iloc[-1]}
 
-        for i in range(1, min_len):
-            # Buy signal
-            if k[i] > d[i] and k[i-1] <= d[i-1] and k[i] < 80 and d[i] < 80:
-                signals.append({'timestamp': df['timestamp'].iloc[i], 'signal': 'buy'})
-            # Sell signal
-            elif k[i] < d[i] and k[i-1] >= d[i-1] and k[i] > 20 and d[i] > 20:
-                signals.append({'timestamp': df['timestamp'].iloc[i], 'signal': 'sell'})
-        
-        return pd.DataFrame(signals)
+        # Sell signal: MACD crosses below signal line, RSI is not oversold
+        if (self.df['macd'].iloc[-1] < self.df['macdsignal'].iloc[-1] and
+                self.df['macd'].iloc[-2] >= self.df['macdsignal'].iloc[-2] and
+                self.df['rsi'].iloc[-1] > 30):
+            return {'signal': 'sell', 'price': self.df['close'].iloc[-1]}
+
+        return None
