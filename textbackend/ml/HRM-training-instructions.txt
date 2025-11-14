@@ -1,0 +1,14 @@
+# In WSL2 terminal (after CUDA setup: nvidia-smi confirms GPU)
+torchrun --nproc_per_node=1 --master_port=29500 train.py \
+  --data_path rgb_samples.pt \
+  --model_type hrm_base \
+  --batch_size 64 \
+  --seq_len 60 \
+  --embed_dim 4 \
+  --epochs 50 \
+  --lr 1e-3 \
+  --fp16 \
+  --output_dir ./pretrained_hrm \
+  --num_workers 8  # Leverage i9 cores for loading
+
+  
