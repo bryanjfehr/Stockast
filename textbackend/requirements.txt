@@ -1,0 +1,11 @@
+ccxt==4.4.12
+TA-Lib
+pandas
+numpy
+SQLAlchemy
+psycopg2-binary
+APScheduler
+python-dotenv
+fastapi
+uvicorn
+websockets

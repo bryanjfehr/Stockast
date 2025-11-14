@@ -1,3 +1,6 @@
 backend/.venv/*
 .venv/*
 .env
+*.venv
+*.env
+windows_app/*
