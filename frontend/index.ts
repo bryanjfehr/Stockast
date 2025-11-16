@@ -2,7 +2,7 @@
  * @format
  */
 
-import {AppRegistry, Platform} from 'react-native';
+import {AppRegistry} from 'react-native';
 import BackgroundFetch from 'react-native-background-fetch';
 import App from './App';
 import {name as appName} from './app.json';
@@ -12,7 +12,7 @@ import {api} from './services/api';
  * --- Headless Task Registration ---
  * This task will be called by the OS when the app is in the background or terminated.
  */
-const headlessTask = async event => {
+const headlessTask = async (event: {taskId: string}) => {
   console.log('[BackgroundFetch HeadlessTask] start', event.taskId);
 
   // Perform your background task here, e.g., run strategies
@@ -22,9 +22,6 @@ const headlessTask = async event => {
   BackgroundFetch.finish(event.taskId);
 };
 
-// Only register the headless task on non-Windows platforms.
-if (Platform.OS !== 'windows') {
-  BackgroundFetch.registerHeadlessTask(headlessTask);
-}
+BackgroundFetch.registerHeadlessTask(headlessTask);
 
 AppRegistry.registerComponent(appName, () => App);

@@ -1,8 +1,14 @@
 import {useEffect} from 'react';
+import {Platform} from 'react-native';
 import BackgroundFetch from 'react-native-background-fetch';
 
 export const useBackgroundFetch = () => {
   useEffect(() => {
+    // Do not initialize on Windows, as it's not supported.
+    if (Platform.OS === 'windows') {
+      return;
+    }
+
     const initBackgroundFetch = async () => {
       const onEvent = async (taskId: string) => {
         console.log('[BackgroundFetch] task: ', taskId);
