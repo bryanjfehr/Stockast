@@ -7,9 +7,9 @@
 import React from 'react';
 import { View, StyleSheet } from 'react-native';
 import Toolbar from '../components/Toolbar';
-import MarketChart from '../components/MarketChart';
-import HotTokens from '../components/HotTokens';
-import OrderBook from '../components/OrderBook';
+import MarketChart from '../components/MarketChart.tsx';
+import HotTokens from '../components/HotTokens.tsx';
+import OrderBook from '../components/OrderBook.tsx';
 
 const DashboardScreen: React.FC = () => {
   return (
@@ -32,6 +32,7 @@ const styles = StyleSheet.create({
   mainContent: {
     flex: 1,
     flexDirection: 'row',
+    padding: 5,
   },
 });
 

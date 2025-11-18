@@ -5,26 +5,28 @@
  * LICENSE file in the root directory of this source tree.
  */
 import React from 'react';
-import { View, Text, StyleSheet } from 'react-native';
+import { View, Text, StyleSheet, ActivityIndicator } from 'react-native';
 
 const Toolbar: React.FC = () => {
   return (
     <View style={styles.container}>
-      <Text style={styles.text}>Toolbar</Text>
+      <Text style={styles.logo}>Stockast</Text>
     </View>
   );
 };
 
 const styles = StyleSheet.create({
   container: {
-    height: 60,
-    backgroundColor: '#1E1E1E',
-    justifyContent: 'center',
+    flexDirection: 'row',
+    justifyContent: 'space-between',
     alignItems: 'center',
+    paddingHorizontal: 15,
+    paddingVertical: 10,
+    backgroundColor: '#1e1e1e',
+    borderBottomWidth: 1,
+    borderBottomColor: '#333',
   },
-  text: {
-    color: '#fff',
-  },
+  logo: { color: '#fff', fontSize: 22, fontWeight: 'bold' },
 });
 
 export default Toolbar;

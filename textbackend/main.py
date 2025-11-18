@@ -1,31 +1,45 @@
+import uvicorn
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 import logging
-from strategies.short_term import ShortTermStrategy
-from strategies.medium_term import MediumTermStrategy
-from strategies.long_term import LongTermStrategy
-from utils import data_fetcher, indicators
 
+from api.routes import router as api_router
+
+# Configure logging
 logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-def run_strategies(exchange, symbol):
-    """
-    Example function to run strategies and handle post-trade logic.
-    """
-    # Initialize strategies
-    short_term = ShortTermStrategy(exchange, symbol, '5m')
+app = FastAPI(
+    title="Stockast API",
+    description="API for the Stockast trading bot and sentiment analysis.",
+    version="0.1.0",
+)
 
-    # Fetch data and generate signals
-    short_term.fetch_data()
-    signals = short_term.generate_signals()
-    
-    # --- Placeholder for post-trade logic ---
-    # Assume a 'buy' signal was generated and a trade was executed
-    buy_signal_time = signals[signals['signal'] == 1.0].index.max()
-    
-    if pd.notna(buy_signal_time):
-        entry_price = short_term.df.loc[buy_signal_time, 'close']
-        
-        # Fetch subsequent data for momentum checks
-        post_trade_data = short_term.df.loc[short_term.df.index > buy_signal_time]
+# CORS (Cross-Origin Resource Sharing) Middleware
+# This allows your React Native frontend (running on a different port)
+# to communicate with this backend.
+# In a production environment, you should restrict origins for security.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allows all origins
+    allow_credentials=True,
+    allow_methods=["*"],  # Allows all methods
+    allow_headers=["*"],  # Allows all headers
+)
 
-        if not post_trade_data.empty and indicators.detect_momentum_surge(post_trade_data):
-            short_term._handle_momentum_surge(entry_price, post_trade_data)
+# Include the API router from api/routes.py
+# All routes defined in that file will be prefixed with /api
+app.include_router(api_router, prefix="/api")
+
+@app.get("/", tags=["Root"])
+async def read_root():
+    """A simple root endpoint to confirm the server is running."""
+    return {"message": "Welcome to the Stockast API"}
+
+
+if __name__ == "__main__":
+    # This block allows you to run the server directly with `python main.py`
+    # The frontend expects the server on port 3000.
+    # The `reload=True` flag is great for development, as it restarts the server on code changes.
+    logger.info("Starting Uvicorn server...")
+    uvicorn.run("main:app", host="0.0.0.0", port=3000, reload=True, log_level="debug")

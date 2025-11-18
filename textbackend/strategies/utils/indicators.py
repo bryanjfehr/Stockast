@@ -74,16 +74,19 @@ def plot_sentiment_projection(df: pd.DataFrame, projection=None):
     plt.tight_layout()
     plt.show()  # Or savefig('sentiment_chart.png')
 
-# Example Usage (with sample LunarCrush data)
-sample_data = pd.DataFrame({
-    'date': pd.date_range('2025-11-01', periods=10),
-    'price': np.random.normal(65000, 2000, 10).cumsum() + 60000,  # Simulated BTC
-    'bullish_pct': np.random.uniform(40, 70, 10),
-    'bearish_pct': np.random.uniform(20, 50, 10)
-})
-df = compute_sentiment_indicator(sample_data)
-corr, proj = test_leading_projection(df)
-plot_sentiment_projection(df, proj)
-print(f"Leading Correlation: {corr:.3f}")
-if proj is not None:
-    print("Projection:\n", proj)
+if __name__ == "__main__":
+    # This block only runs when the script is executed directly
+    # Example Usage (with sample LunarCrush data)
+    sample_data = pd.DataFrame({
+        'date': pd.date_range('2025-11-01', periods=10),
+        'price': np.random.normal(65000, 2000, 10).cumsum() + 60000,  # Simulated BTC
+        'bullish_pct': np.random.uniform(40, 70, 10),
+        'bearish_pct': np.random.uniform(20, 50, 10)
+    })
+    sample_data.set_index('date', inplace=True)
+    df = compute_sentiment_indicator(sample_data)
+    corr, proj = test_leading_projection(df)
+    plot_sentiment_projection(df, proj)
+    print(f"Leading Correlation: {corr:.3f}")
+    if proj is not None:
+        print("Projection:\n", proj)

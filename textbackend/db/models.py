@@ -44,3 +44,14 @@ class Signal(Base):
     win_rate = Column(Float)
     signal_type = Column(String) # "buy", "sell"
     timestamp = Column(DateTime, default=datetime.datetime.utcnow)
+
+class SocialMetric(Base):
+    __tablename__ = "social_metrics"
+    id = Column(Integer, primary_key=True, index=True)
+    symbol = Column(String, index=True)
+    date = Column(DateTime, index=True)
+    mentions = Column(Float)
+    bullish_pct = Column(Float)
+    bearish_pct = Column(Float)
+    neutral_pct = Column(Float)
+    net_sentiment = Column(Float) # bullish - bearish

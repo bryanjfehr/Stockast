@@ -32,16 +32,18 @@ const KeyInputScreen: React.FC<KeyInputScreenProps> = ({ navigation }) => {
   const { setApiKeys, isLoading } = useAuth();
   const [apiKey, setApiKey] = useState<string>('');
   const [apiSecret, setApiSecret] = useState<string>('');
+  const [santimentApiKey, setSantimentApiKey] = useState<string>('');
 
   const handleSaveKeys = async () => {
-    if (!apiKey || !apiSecret) {
-      Alert.alert('Error', 'Please enter both API Key and API Secret.');
+    if (!apiKey || !apiSecret || !santimentApiKey) {
+      Alert.alert('Error', 'Please enter all three API keys.');
       return;
     }
 
     const success = await setApiKeys({
       exchangeApiKey: apiKey,
       exchangeApiSecret: apiSecret,
+      santimentApiKey: santimentApiKey,
     });
 
     if (success) {
@@ -75,6 +77,14 @@ const KeyInputScreen: React.FC<KeyInputScreenProps> = ({ navigation }) => {
           value={apiSecret}
           onChangeText={setApiSecret}
           secureTextEntry
+          autoCapitalize="none"
+        />
+        <TextInput
+          style={styles.input}
+          placeholder="Santiment API Key"
+          placeholderTextColor="#888"
+          value={santimentApiKey}
+          onChangeText={setSantimentApiKey}
           autoCapitalize="none"
         />
         <Button title="Save Keys" onPress={handleSaveKeys} disabled={isLoading} />

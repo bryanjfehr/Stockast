@@ -4,6 +4,7 @@
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
  */
+import { Alert } from 'react-native';
 import React,
   { useEffect } from 'react';
 import {
@@ -47,11 +48,12 @@ const AppNavigator: React.FC = () => {
       const calibrateBot = async () => {
         try {
           console.log('Performing initial calibration...');
-          await api.post('/calibrate');
-          console.log('Calibration successful.');
-        } catch (error) {
-          console.error('Calibration failed:', error);
-          // Optionally, notify the user of the calibration failure
+          await api.post('/calibrate'); // This validates the keys on the backend.
+          console.log('API Key calibration successful.');
+        } catch (error: any) {
+          console.error('API Key calibration failed:', error.response?.data?.detail || error.message);
+          // Notify the user that their exchange API keys are invalid.
+          Alert.alert('Calibration Failed', `Could not validate API keys. Please check them and restart the app. \n\nError: ${error.response?.data?.detail || error.message}`);
         }
       };
       calibrateBot();

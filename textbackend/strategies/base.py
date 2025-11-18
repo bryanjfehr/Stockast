@@ -1,7 +1,7 @@
 import logging
 from abc import ABC, abstractmethod
-from utils import data_fetcher
-from utils import indicators
+from .utils import data_fetcher
+from .utils import indicators
 import pandas as pd
 import numpy as np
 

@@ -10,7 +10,7 @@
     "react-native-async-storage": "^1.23.1",
     "react-native-charts-wrapper": "^0.5.7",
     "axios": "^1.7.7",
-    "react-native-keychain": "^8.1.2",
+    "react-native-sensitive
     "@tanstack/react-query": "^5.59.0"
   },
   "devDependencies": {

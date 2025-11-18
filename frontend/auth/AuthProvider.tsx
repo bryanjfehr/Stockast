@@ -11,13 +11,14 @@ import React, {
   useContext,
   useCallback,
 } from 'react';
-import * as Keychain from 'react-native-keychain';
+import SInfo from 'react-native-sensitive-info';
 import AsyncStorage from '@react-native-async-storage/async-storage'; // Using the community package
 
 // Define types for API keys and PIN
 interface ApiKeys {
   exchangeApiKey: string;
   exchangeApiSecret: string;
+  santimentApiKey: string;
 }
 
 interface AuthContextType {
@@ -44,10 +45,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
   const [isPinAuthenticated, setIsPinAuthenticated] = useState<boolean>(false);
   const [isLoading, setIsLoading] = useState<boolean>(true);
 
-  // Constants for Keychain and AsyncStorage keys
-  const KEYCHAIN_SERVICE_API_KEYS = 'stockastApiKeys';
-  const KEYCHAIN_SERVICE_PIN = 'stockastPin';
+  // Constants for storage keys
+  const API_KEYS_STORAGE_KEY = 'stockastApiKeys';
+  const PIN_STORAGE_KEY = 'stockastPin';
   const ASYNC_STORAGE_HAS_PIN = 'stockastHasPin';
+
+  // Define options for react-native-sensitive-info.
+  const SENSITIVE_INFO_OPTIONS = {
+    sharedPreferencesName: 'mySharedPrefs', // Recommended for Android
+    keychainService: 'myKeychain', // Recommended for iOS
+  };
 
   // Function to check initial authentication state
   const checkAuthStatus = useCallback(async () => {
@@ -55,10 +62,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
       setIsLoading(true);
 
       // Check for API keys
-      const credentials = await Keychain.getGenericPassword({
-        service: KEYCHAIN_SERVICE_API_KEYS,
-      });
-      const keysExist = !!credentials;
+      const apiKeysJson = await SInfo.getItem(API_KEYS_STORAGE_KEY, SENSITIVE_INFO_OPTIONS);
+      const keysExist = !!apiKeysJson;
       setHasKeys(keysExist);
 
       // Check if a PIN is set (AsyncStorage is used to quickly check existence without retrieving)
@@ -88,11 +93,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
   // Function to set API keys
   const setApiKeys = useCallback(async (keys: ApiKeys): Promise<boolean> => {
     try {
-      await Keychain.setGenericPassword(
-        keys.exchangeApiKey,
-        keys.exchangeApiSecret,
-        { service: KEYCHAIN_SERVICE_API_KEYS },
-      );
+      // Store as a JSON string, matching the structure api.ts expects
+      const credentialsToStore = JSON.stringify({
+        username: keys.exchangeApiKey,
+        password: keys.exchangeApiSecret,
+        santiment: keys.santimentApiKey,
+      });
+
+      await SInfo.setItem(API_KEYS_STORAGE_KEY, credentialsToStore, SENSITIVE_INFO_OPTIONS);
+
       setHasKeys(true);
       // After setting keys, if a PIN is already set, we need to authenticate it.
       const pinSet = await AsyncStorage.getItem(ASYNC_STORAGE_HAS_PIN);
@@ -111,9 +120,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
   // Function to set a new PIN
   const setPin = useCallback(async (pin: string): Promise<boolean> => {
     try {
-      await Keychain.setGenericPassword('userPin', pin, {
-        service: KEYCHAIN_SERVICE_PIN,
-      });
+      await SInfo.setItem(PIN_STORAGE_KEY, pin, SENSITIVE_INFO_OPTIONS);
       await AsyncStorage.setItem(ASYNC_STORAGE_HAS_PIN, 'true');
       setIsPinAuthenticated(true);
       return true;
@@ -126,10 +133,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
   // Function to authenticate with an existing PIN
   const authenticatePin = useCallback(async (pin: string): Promise<boolean> => {
     try {
-      const credentials = await Keychain.getGenericPassword({
-        service: KEYCHAIN_SERVICE_PIN,
-      });
-      if (credentials && credentials.password === pin) {
+      const storedPin = await SInfo.getItem(PIN_STORAGE_KEY, SENSITIVE_INFO_OPTIONS);
+      if (storedPin && storedPin === pin) {
         setIsPinAuthenticated(true);
         return true;
       }
@@ -143,8 +148,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
   // Function to clear all authentication data
   const clearAuth = useCallback(async () => {
     try {
-      await Keychain.resetGenericPassword({ service: KEYCHAIN_SERVICE_API_KEYS });
-      await Keychain.resetGenericPassword({ service: KEYCHAIN_SERVICE_PIN });
+      await SInfo.deleteItem(API_KEYS_STORAGE_KEY, SENSITIVE_INFO_OPTIONS);
+      await SInfo.deleteItem(PIN_STORAGE_KEY, SENSITIVE_INFO_OPTIONS);
       await AsyncStorage.removeItem(ASYNC_STORAGE_HAS_PIN);
       setHasKeys(false);
       setIsPinAuthenticated(false);
