@@ -9,3 +9,5 @@ frontend.Package/*
 /windows/*
 frontend/windows/*
 *.log
+gen_src/*
+*.db

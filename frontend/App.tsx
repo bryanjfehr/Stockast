@@ -4,6 +4,8 @@
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
  */
+
+// This import must be at the top of the file to initialize gesture handler
 import { Alert } from 'react-native';
 import React,
   { useEffect } from 'react';
@@ -11,6 +13,7 @@ import {
   SafeAreaView,
   StatusBar,
   StyleSheet,
+  Text,
   View,
   ActivityIndicator,
 } from 'react-native';
@@ -40,7 +43,7 @@ const Stack = createNativeStackNavigator<RootStackParamList>();
  * It determines which screen to show based on the authentication state.
  */
 const AppNavigator: React.FC = () => {
-  const { hasKeys, isPinAuthenticated, isLoading } = useAuth();
+  const { hasKeys, hasPinSet, isPinAuthenticated, isLoading } = useAuth();
 
   // Perform initial calibration check if keys are set
   useEffect(() => {
@@ -71,7 +74,7 @@ const AppNavigator: React.FC = () => {
   return (
     <NavigationContainer>
       <Stack.Navigator screenOptions={{ headerShown: false }}>
-        {!hasKeys ? (
+        {!hasKeys ? ( // If no keys, go to KeyInputScreen
           <Stack.Screen name="KeyInput" component={KeyInputScreen} />
         ) : !isPinAuthenticated ? (
           <Stack.Screen name="PINAuth" component={PINAuthScreen} />
@@ -93,6 +96,9 @@ const App: React.FC = () => {
   useAppState();
   useBackgroundFetch();
 
+  // The GestureHandlerRootView is removed as it's part of a dependency
+  // we are removing to fix build errors.
+  // SafeAreaView is now the root component.
   return (
     <SafeAreaView style={styles.container}>
       <StatusBar barStyle="light-content" />

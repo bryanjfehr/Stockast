@@ -7,9 +7,9 @@
 import React from 'react';
 import { View, StyleSheet } from 'react-native';
 import Toolbar from '../components/Toolbar';
-import MarketChart from '../components/MarketChart.tsx';
-import HotTokens from '../components/HotTokens.tsx';
-import OrderBook from '../components/OrderBook.tsx';
+import MarketChart from '../components/MarketChart';
+import HotTokens from '../components/HotTokens';
+import OrderBook from '../components/OrderBook';
 
 const DashboardScreen: React.FC = () => {
   return (

@@ -13,20 +13,25 @@ import React, {
 } from 'react';
 import SInfo from 'react-native-sensitive-info';
 import AsyncStorage from '@react-native-async-storage/async-storage'; // Using the community package
+import { api } from '../services/api';
 
-// Define types for API keys and PIN
+// Define the structure for the API keys object
 interface ApiKeys {
-  exchangeApiKey: string;
-  exchangeApiSecret: string;
-  santimentApiKey: string;
+  exchange_api_key: string;
+  exchange_api_secret: string;
+  santiment_api_key: string;
 }
 
 interface AuthContextType {
   hasKeys: boolean;
+  hasPinSet: boolean;
   isPinAuthenticated: boolean;
   isLoading: boolean;
   setApiKeys: (keys: ApiKeys) => Promise<boolean>;
   setPin: (pin: string) => Promise<boolean>;
+  setIsLoading: (loading: boolean) => void;
+  setHasPinSet: (hasPinSet: boolean) => void;
+  checkAuthStatus: () => Promise<void>;
   authenticatePin: (pin: string) => Promise<boolean>;
   clearAuth: () => Promise<void>;
 }
@@ -42,15 +47,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
   children,
 }) => {
   const [hasKeys, setHasKeys] = useState<boolean>(false);
+  const [hasPinSet, setHasPinSet] = useState<boolean>(false); // New state to track if a PIN has been set
   const [isPinAuthenticated, setIsPinAuthenticated] = useState<boolean>(false);
   const [isLoading, setIsLoading] = useState<boolean>(true);
 
-  // Constants for storage keys
   const API_KEYS_STORAGE_KEY = 'stockastApiKeys';
   const PIN_STORAGE_KEY = 'stockastPin';
   const ASYNC_STORAGE_HAS_PIN = 'stockastHasPin';
 
-  // Define options for react-native-sensitive-info.
   const SENSITIVE_INFO_OPTIONS = {
     sharedPreferencesName: 'mySharedPrefs', // Recommended for Android
     keychainService: 'myKeychain', // Recommended for iOS
@@ -61,18 +65,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
     try {
       setIsLoading(true);
 
-      // Check for API keys
       const apiKeysJson = await SInfo.getItem(API_KEYS_STORAGE_KEY, SENSITIVE_INFO_OPTIONS);
       const keysExist = !!apiKeysJson;
       setHasKeys(keysExist);
 
-      // Check if a PIN is set (AsyncStorage is used to quickly check existence without retrieving)
-      const pinSet = await AsyncStorage.getItem(ASYNC_STORAGE_HAS_PIN);
+      const pinSetInStorage = await AsyncStorage.getItem(ASYNC_STORAGE_HAS_PIN);
+      setHasPinSet(!!pinSetInStorage); // Update new state
 
-      // If keys exist and a PIN is set, but not yet authenticated, then PIN is needed.
-      // Otherwise, if no PIN is set, or no keys, no PIN authentication is needed yet.
-      if (keysExist && pinSet) {
-        setIsPinAuthenticated(false); // PIN is set, but not yet authenticated for this session
+      // On startup, if keys exist and a PIN is set, the user is NOT yet authenticated for the session.
+      // If keys don't exist, or no PIN is set, then PIN authentication isn't the current step.
+      // The AppNavigator will handle showing KeyInput or PINAuth based on hasKeys and hasPinSet.
+      // isPinAuthenticated should only be true AFTER successful PIN entry.
+      if (keysExist && pinSetInStorage) {
+        setIsPinAuthenticated(false);
       } else {
         setIsPinAuthenticated(true); // No PIN set, or no keys, so no PIN auth needed yet
       }
@@ -93,26 +98,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
   // Function to set API keys
   const setApiKeys = useCallback(async (keys: ApiKeys): Promise<boolean> => {
     try {
-      // Store as a JSON string, matching the structure api.ts expects
-      const credentialsToStore = JSON.stringify({
-        username: keys.exchangeApiKey,
-        password: keys.exchangeApiSecret,
-        santiment: keys.santimentApiKey,
-      });
-
-      await SInfo.setItem(API_KEYS_STORAGE_KEY, credentialsToStore, SENSITIVE_INFO_OPTIONS);
-
-      setHasKeys(true);
-      // After setting keys, if a PIN is already set, we need to authenticate it.
-      const pinSet = await AsyncStorage.getItem(ASYNC_STORAGE_HAS_PIN);
-      if (pinSet) {
-        setIsPinAuthenticated(false);
-      } else {
-        setIsPinAuthenticated(true); // No PIN set, so consider authenticated for now
-      }
+      // The interceptor needs the keys in camelCase format.
+      const keysToStore = {
+        exchangeApiKey: keys.exchange_api_key,
+        exchangeApiSecret: keys.exchange_api_secret,
+        santimentApiKey: keys.santiment_api_key,
+      };
+      await SInfo.setItem(API_KEYS_STORAGE_KEY, JSON.stringify(keysToStore), SENSITIVE_INFO_OPTIONS);
       return true;
     } catch (error) {
-      console.error('Failed to set API keys:', error);
       return false;
     }
   }, []);
@@ -122,7 +116,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
     try {
       await SInfo.setItem(PIN_STORAGE_KEY, pin, SENSITIVE_INFO_OPTIONS);
       await AsyncStorage.setItem(ASYNC_STORAGE_HAS_PIN, 'true');
-      setIsPinAuthenticated(true);
+      setIsPinAuthenticated(true); // Successfully set a new PIN, so user is authenticated
+      setHasPinSet(true);
       return true;
     } catch (error) {
       console.error('Failed to set PIN:', error);
@@ -134,7 +129,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
   const authenticatePin = useCallback(async (pin: string): Promise<boolean> => {
     try {
       const storedPin = await SInfo.getItem(PIN_STORAGE_KEY, SENSITIVE_INFO_OPTIONS);
-      if (storedPin && storedPin === pin) {
+      // Ensure storedPin is not null/undefined before comparing.
+      // SInfo.getItem can return null if the key doesn't exist.
+      // If storedPin is null/undefined, it means no PIN was set, so it's an incorrect PIN.
+      if (storedPin !== null && storedPin !== undefined && storedPin === pin) {
         setIsPinAuthenticated(true);
         return true;
       }
@@ -151,19 +149,25 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
       await SInfo.deleteItem(API_KEYS_STORAGE_KEY, SENSITIVE_INFO_OPTIONS);
       await SInfo.deleteItem(PIN_STORAGE_KEY, SENSITIVE_INFO_OPTIONS);
       await AsyncStorage.removeItem(ASYNC_STORAGE_HAS_PIN);
+      // Reset all auth states
       setHasKeys(false);
+      setHasPinSet(false);
       setIsPinAuthenticated(false);
     } catch (error) {
       console.error('Failed to clear auth data:', error);
     }
-  }, []);
+  }, []); // No dependencies needed for clearAuth as it resets local state
 
   const value = {
     hasKeys,
+    hasPinSet,
     isPinAuthenticated,
     isLoading,
     setApiKeys,
     setPin,
+    setIsLoading,
+    setHasPinSet,
+    checkAuthStatus,
     authenticatePin,
     clearAuth,
   };

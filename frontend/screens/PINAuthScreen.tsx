@@ -30,7 +30,7 @@ type RootStackParamList = {
 type PINAuthScreenProps = StackScreenProps<RootStackParamList, 'PINAuth'>;
 
 const PINAuthScreen: React.FC<PINAuthScreenProps> = ({ navigation }) => {
-  const { setPin, authenticatePin, isLoading } = useAuth();
+  const { setPin, authenticatePin, isLoading, setIsLoading } = useAuth();
   const [pin, setPinValue] = useState<string>('');
   const [isSettingNewPin, setIsSettingNewPin] = useState<boolean>(false);
 
@@ -48,10 +48,10 @@ const PINAuthScreen: React.FC<PINAuthScreenProps> = ({ navigation }) => {
       return;
     }
 
+    setIsLoading(true);
     if (isSettingNewPin) {
       const success = await setPin(pin);
       if (success) {
-        Alert.alert('Success', 'PIN set successfully!');
         // AuthProvider will update isPinAuthenticated to true, triggering navigation to Home
       } else {
         Alert.alert('Error', 'Failed to set PIN. Please try again.');
@@ -65,6 +65,7 @@ const PINAuthScreen: React.FC<PINAuthScreenProps> = ({ navigation }) => {
         Alert.alert('Error', 'Incorrect PIN. Please try again.');
       }
     }
+    setIsLoading(false);
   };
 
   return (

@@ -7,45 +7,35 @@
 import axios from 'axios';
 import SInfo from 'react-native-sensitive-info';
 
-// Define your backend API base URL
-const API_BASE_URL = 'http://localhost:3000/api'; // Adjust as per your backend setup
-const API_KEYS_STORAGE_KEY = 'stockastApiKeys';
-
-// Define options for react-native-sensitive-info.
-// This ensures consistency across your app.
-const SENSITIVE_INFO_OPTIONS = {
-  sharedPreferencesName: 'mySharedPrefs', // Recommended for Android
-  keychainService: 'myKeychain', // Recommended for iOS
-};
+const API_URL = 'http://127.0.0.1:3000/api'; // Use 10.0.2.2 for Android emulator if connecting to localhost
 
 export const api = axios.create({
-  baseURL: API_BASE_URL,
-  timeout: 10000, // 10 seconds timeout
-  headers: {
-    'Content-Type': 'application/json',
-  },
+  baseURL: API_URL,
+  timeout: 10000, // 10 second timeout
 });
 
-// Request interceptor to attach API keys from Keychain
+// Define constants for storage keys
+const API_KEYS_STORAGE_KEY = 'stockastApiKeys';
+const SENSITIVE_INFO_OPTIONS = {
+  sharedPreferencesName: 'mySharedPrefs',
+  keychainService: 'myKeychain',
+};
+
+// Use an interceptor to dynamically add API keys to headers
 api.interceptors.request.use(
   async (config) => {
-    try {
-      const credentialsJson = await SInfo.getItem(API_KEYS_STORAGE_KEY, SENSITIVE_INFO_OPTIONS);
-      if (credentialsJson) {
-        // We assume the credentials are a JSON string with username (API Key) and password (API Secret)
-        const credentials = JSON.parse(credentialsJson);
-        // Assuming your backend expects these headers
-        config.headers['X-Exchange-Api-Key'] = credentials.username;
-        config.headers['X-Exchange-Api-Secret'] = credentials.password;
-        config.headers['X-Santiment-Api-Key'] = credentials.santiment;
-      }
-    } catch (error) {
-      console.error('Failed to retrieve API keys from secure storage:', error);
-      // Optionally, handle this by redirecting to login or showing an error
+    const apiKeysJson = await SInfo.getItem(API_KEYS_STORAGE_KEY, SENSITIVE_INFO_OPTIONS);
+
+    if (apiKeysJson) {
+      const apiKeys = JSON.parse(apiKeysJson);
+      config.headers['X-Exchange-Api-Key'] = apiKeys.exchangeApiKey;
+      config.headers['X-Exchange-Api-Secret'] = apiKeys.exchangeApiSecret;
+      config.headers['X-Santiment-Api-Key'] = apiKeys.santimentApiKey;
     }
+
     return config;
   },
   (error) => {
     return Promise.reject(error);
-  },
+  }
 );

@@ -21,15 +21,19 @@ const HotTokens: React.FC = () => {
   useEffect(() => {
     const fetchSentiment = async () => {
       try {
+        console.log('[HotTokens] Fetching sentiment...');
         setLoading(true);
         const response = await api.get('/sentiment');
+        console.log('[HotTokens] Raw data received:', response.data);
         setTokens(response.data.top_sentiment);
         setError(null);
       } catch (err: any) {
-        setError(err.message || 'Failed to fetch hot tokens.');
-        console.error(err);
+        const errorMessage = err.message || 'Failed to fetch hot tokens.';
+        setError(errorMessage);
+        console.error('[HotTokens] Fetch error:', err.response ? err.response.data : err);
       } finally {
         setLoading(false);
+        console.log('[HotTokens] Fetch complete.');
       }
     };
 

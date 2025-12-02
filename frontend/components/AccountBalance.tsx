@@ -25,12 +25,17 @@ const AccountBalance: React.FC = () => {
         setLoading(true);
         const response = await api.get('/account/balance');
         console.log('[AccountBalance] Raw data received:', response.data);
-        setBalances(response.data);
-        setError(null);
+        // Add validation to ensure the response is an array before setting state
+        if (Array.isArray(response.data)) {
+          setBalances(response.data);
+          setError(null);
+        } else {
+          throw new Error('Received invalid data format for balances.');
+        }
       } catch (err: any) {
         const errorMessage = err.message || 'Failed to fetch balances.';
         setError(errorMessage);
-        console.error('[AccountBalance] Fetch error:', err.response?.data || err);
+        console.error('[AccountBalance] Fetch error:', err.response ? err.response.data : err);
       } finally {
         setLoading(false);
         console.log('[AccountBalance] Fetch complete.');
@@ -46,6 +51,10 @@ const AccountBalance: React.FC = () => {
       {loading && <ActivityIndicator size="large" color="#fff" />}
       {error && <Text style={styles.errorText}>{error}</Text>}
       <FlatList
+        // Add a message for when the list is empty but there's no error
+        ListEmptyComponent={
+          !loading && !error ? <Text style={styles.emptyText}>No assets found.</Text> : null
+        }
         data={balances}
         keyExtractor={(item) => item.asset}
         renderItem={({ item }) => (
@@ -70,6 +79,7 @@ const styles = StyleSheet.create({
   title: { color: '#fff', fontSize: 18, fontWeight: 'bold', marginBottom: 10, textAlign: 'center' },
   errorText: { color: 'red', textAlign: 'center' },
   balanceRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: '#333' },
+  emptyText: { color: '#ccc', textAlign: 'center', fontStyle: 'italic', marginTop: 20 },
   assetText: { color: '#fff', fontSize: 16 },
   amountText: { color: '#ccc', fontSize: 16 },
 });

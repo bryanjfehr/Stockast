@@ -18,7 +18,7 @@ import {
 } from 'react-native';
 import { StackScreenProps } from '@react-navigation/stack';
 import { useAuth } from '../auth/AuthProvider';
-
+import { api } from '../services/api';
 // Define the RootStackParamList type (should match App.tsx)
 type RootStackParamList = {
   KeyInput: undefined;
@@ -29,7 +29,7 @@ type RootStackParamList = {
 type KeyInputScreenProps = StackScreenProps<RootStackParamList, 'KeyInput'>;
 
 const KeyInputScreen: React.FC<KeyInputScreenProps> = ({ navigation }) => {
-  const { setApiKeys, isLoading } = useAuth();
+  const { setApiKeys, isLoading, setIsLoading, checkAuthStatus } = useAuth();
   const [apiKey, setApiKey] = useState<string>('');
   const [apiSecret, setApiSecret] = useState<string>('');
   const [santimentApiKey, setSantimentApiKey] = useState<string>('');
@@ -40,18 +40,29 @@ const KeyInputScreen: React.FC<KeyInputScreenProps> = ({ navigation }) => {
       return;
     }
 
-    const success = await setApiKeys({
-      exchangeApiKey: apiKey,
-      exchangeApiSecret: apiSecret,
-      santimentApiKey: santimentApiKey,
-    });
+    setIsLoading(true);
+    try {
+      const keysToSave = {
+        exchange_api_key: apiKey,
+        exchange_api_secret: apiSecret,
+        santiment_api_key: santimentApiKey,
+      };
 
-    if (success) {
-      Alert.alert('Success', 'API Keys saved securely!');
-      // After saving keys, the AuthProvider will update its state.
-      // The AppNavigator will then automatically navigate to PINAuth or Home.
-    } else {
+      // 1. Save keys to the backend config
+      await api.post('/keys', {
+        ...keysToSave,
+      });
+      
+      // 2. Save keys to the frontend secure storage for the interceptor to use
+      await setApiKeys(keysToSave);
+
+      Alert.alert('Success', 'API Keys saved securely on the server!');
+      await checkAuthStatus();
+    } catch (error) {
+      console.error('Failed to save API keys:', error);
       Alert.alert('Error', 'Failed to save API Keys. Please try again.');
+    } finally {
+      setIsLoading(false);
     }
   };
 
