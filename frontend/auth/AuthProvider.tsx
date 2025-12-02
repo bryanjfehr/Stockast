@@ -30,7 +30,6 @@ interface AuthContextType {
   setApiKeys: (keys: ApiKeys) => Promise<boolean>;
   setPin: (pin: string) => Promise<boolean>;
   setIsLoading: (loading: boolean) => void;
-  setHasPinSet: (hasPinSet: boolean) => void;
   checkAuthStatus: () => Promise<void>;
   authenticatePin: (pin: string) => Promise<boolean>;
   clearAuth: () => Promise<void>;
