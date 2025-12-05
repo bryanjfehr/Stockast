@@ -1,0 +1,167 @@
+GET /api/v3/exchangeInfo (full response is nearly 3KB)
+
+"timezone": "CST",
+  "serverTime": 1764706193076,
+  "rateLimits": [],
+  "exchangeFilters": [],
+  "symbols": [
+    {
+      "symbol": "索拉拉USDT",
+      "status": "1",
+      "baseAsset": "索拉拉",
+      "baseAssetPrecision": 2,
+      "quoteAsset": "USDT",
+      "quotePrecision": 6,
+      "quoteAssetPrecision": 6,
+      "baseCommissionPrecision": 2,
+      "quoteCommissionPrecision": 6,
+      "orderTypes": [
+        "LIMIT",
+        "MARKET",
+        "LIMIT_MAKER"
+      ],
+      "isSpotTradingAllowed": true,
+      "isMarginTradingAllowed": false,
+      "quoteAmountPrecision": "1",
+      "baseSizePrecision": "0",
+      "permissions": [
+        "SPOT"
+      ],
+      "filters": [
+        {
+          "filterType": "PERCENT_PRICE_BY_SIDE",
+          "bidMultiplierUp": "0.2",
+          "askMultiplierDown": "0.2"
+        }
+      ],
+      "maxQuoteAmount": "2000000",
+      "makerCommission": "0",
+      "takerCommission": "0.0005",
+      "quoteAmountPrecisionMarket": "1",
+      "maxQuoteAmountMarket": "100000",
+      "fullName": "SUOLALA",
+      "tradeSideType": 1,
+      "contractAddress": "CY1P83KnKwFYostvjQcoR2HJLyEJWRBRaVQmYyyD3cR8",
+      "conceptPlateIds": [51, 44, 60, 29],
+      "st": false
+    },
+    {
+      "symbol": "BNTUSDT",
+      "status": "1",
+      "baseAsset": "BNT",
+      "baseAssetPrecision": 2,
+      "quoteAsset": "USDT",
+      "quotePrecision": 4,
+      "quoteAssetPrecision": 4,
+      "baseCommissionPrecision": 2,
+      "quoteCommissionPrecision": 4,
+      "orderTypes": [
+        "LIMIT",
+        "MARKET",
+        "LIMIT_MAKER"
+      ],
+      "isSpotTradingAllowed": true,
+      "isMarginTradingAllowed": false,
+      "quoteAmountPrecision": "1",
+      "baseSizePrecision": "0.1",
+      "permissions": [
+        "SPOT"
+      ],
+      "filters": [
+        {
+          "filterType": "PERCENT_PRICE_BY_SIDE",
+          "bidMultiplierUp": "0.2",
+          "askMultiplierDown": "0.2"
+        }
+      ],
+      "maxQuoteAmount": "2000000",
+      "makerCommission": "0",
+      "takerCommission": "0.0005",
+      "quoteAmountPrecisionMarket": "1",
+      "maxQuoteAmountMarket": "100000",
+      "fullName": "Bancor",
+      "tradeSideType": 1,
+      "contractAddress": "0x1f573d6fb3f13d689ff844b4ce37794d79a7ff1c",
+      "conceptPlateIds": [51],
+      "st": false
+    },
+    {
+      "symbol": "NTXUSDT",
+      "status": "1",
+      "baseAsset": "NTX",
+      "baseAssetPrecision": 2,
+      "quoteAsset": "USDT",
+      "quotePrecision": 5,
+      "quoteAssetPrecision": 5,
+      "baseCommissionPrecision": 2,
+      "quoteCommissionPrecision": 5,
+      "orderTypes": [
+        "LIMIT",
+        "MARKET",
+        "LIMIT_MAKER"
+      ],
+      "isSpotTradingAllowed": true,
+      "isMarginTradingAllowed": false,
+      "quoteAmountPrecision": "1",
+      "baseSizePrecision": "0.001",
+      "permissions": [
+        "SPOT"
+      ],
+      "filters": [
+        {
+          "filterType": "PERCENT_PRICE_BY_SIDE",
+          "bidMultiplierUp": "0.2",
+          "askMultiplierDown": "0.2"
+        }
+      ],
+      "maxQuoteAmount": "2000000",
+      "makerCommission": "0",
+      "takerCommission": "0.0005",
+      "quoteAmountPrecisionMarket": "1",
+      "maxQuoteAmountMarket": "100000",
+      "fullName": "NuNet",
+      "tradeSideType": 1,
+      "contractAddress": "0xf0d33beda4d734c72684b5f9abbebf715d0a7935",
+      "conceptPlateIds": [51, 23, 40],
+      "st": false
+    },
+    {
+      "symbol": "DEVVEUSDT",
+      "status": "1",
+      "baseAsset": "DEVVE",
+      "baseAssetPrecision": 2,
+      "quoteAsset": "USDT",
+      "quotePrecision": 4,
+      "quoteAssetPrecision": 4,
+      "baseCommissionPrecision": 2,
+      "quoteCommissionPrecision": 4,
+      "orderTypes": [
+        "LIMIT",
+        "MARKET",
+        "LIMIT_MAKER"
+      ],
+      "isSpotTradingAllowed": true,
+      "isMarginTradingAllowed": false,
+      "quoteAmountPrecision": "1",
+      "baseSizePrecision": "0",
+      "permissions": [
+        "SPOT"
+      ],
+      "filters": [
+        {
+          "filterType": "PERCENT_PRICE_BY_SIDE",
+          "bidMultiplierUp": "0.2",
+          "askMultiplierDown": "0.2"
+        }
+      ],
+      "maxQuoteAmount": "2000000",
+      "makerCommission": "0",
+      "takerCommission": "0.0005",
+      "quoteAmountPrecisionMarket": "1",
+      "maxQuoteAmountMarket": "100000",
+      "fullName": "DevvE",
+      "tradeSideType": 1,
+      "contractAddress": "0x8248270620Aa532E4d64316017bE5E873E37cc09",
+      "conceptPlateIds": [51],
+      "st": false
+    },

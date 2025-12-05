@@ -1,10 +1,11 @@
 import uvicorn
-from fastapi import FastAPI, Request, Response, HTTPException
+from fastapi import FastAPI, Request, Response, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 import logging
 import time
 from api.routes import router as api_router
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
+from starlette.datastructures import MutableHeaders
 import json
 import os
 from pydantic import BaseModel
@@ -68,6 +69,24 @@ app.add_middleware(LoggingMiddleware)
 # Include the API router from api/routes.py
 # All routes defined in that file will be prefixed with /api
 app.include_router(api_router, prefix="/api")
+
+# --- Symbol Data ---
+# In a real app, this would be in a separate file, e.g., api/market_data.py
+# and would use a proper client for the exchange.
+async def get_all_symbols_placeholder():
+    """
+    Placeholder for fetching all symbols from MEXC.
+    This should be replaced with a real API call.
+    """
+    # This is a placeholder. In a real implementation, you would make an API call
+    # to MEXC's /api/v3/exchangeInfo endpoint and parse the symbols.
+    return ["BTC/USDT", "ETH/USDT", "XRP/USDT", "SOL/USDT", "DOGE/USDT"]
+
+@app.get("/api/exchange/symbols", tags=["Market Data"])
+async def get_exchange_symbols():
+    """Returns a list of all available trading symbols from the exchange."""
+    symbols = await get_all_symbols_placeholder()
+    return symbols
 
 @app.post("/api/keys", status_code=200)
 async def save_api_keys(keys: ApiKeys):

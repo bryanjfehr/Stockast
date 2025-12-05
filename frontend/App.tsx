@@ -25,14 +25,12 @@ import { api } from './services/api';
 
 import HomeScreen from './screens/HomeScreen';
 import KeyInputScreen from './screens/KeyInputScreen';
-import PINAuthScreen from './screens/PINAuthScreen';
 import { useAppState } from './hooks/useAppState';
 import { useBackgroundFetch } from './hooks/useBackgroundFetch';
 
 // Define the type for the navigation stack parameters
 type RootStackParamList = {
   KeyInput: undefined;
-  PINAuth: undefined;
   Home: undefined;
 };
 
@@ -43,7 +41,7 @@ const Stack = createNativeStackNavigator<RootStackParamList>();
  * It determines which screen to show based on the authentication state.
  */
 const AppNavigator: React.FC = () => {
-  const { hasKeys, hasPinSet, isPinAuthenticated, isLoading } = useAuth();
+  const { hasKeys, isPinAuthenticated, isLoading } = useAuth();
 
   // Perform initial calibration check if keys are set
   useEffect(() => {
@@ -76,9 +74,7 @@ const AppNavigator: React.FC = () => {
       <Stack.Navigator screenOptions={{ headerShown: false }}>
         {!hasKeys ? ( // If no keys, go to KeyInputScreen
           <Stack.Screen name="KeyInput" component={KeyInputScreen} />
-        ) : !isPinAuthenticated ? (
-          <Stack.Screen name="PINAuth" component={PINAuthScreen} />
-        ) : (
+        ) : ( // If keys exist, PIN is bypassed, go to Home
           <Stack.Screen name="Home" component={HomeScreen} />
         )}
       </Stack.Navigator>
