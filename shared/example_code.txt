@@ -1,0 +1,80 @@
+import logging
+import os
+from fastapi import FastAPI
+from apscheduler.schedulers.background import BackgroundScheduler
+from sqlalchemy.orm import Session
+from utils.data_fetcher import fetch_exchange_info, fetch_multi_histories
+from ml.data_sampler import generate_samples
+from ml.hrm_train import train_hrm  # Separate train fn below
+from db.utils import get_db
+from db.models import Symbol
+
+logging.basicConfig(level=logging.INFO)
+app = FastAPI()
+scheduler = BackgroundScheduler()
+
+def startup_checks(db: Session):
+    """Run on app start: Check symbols, HRM dataset, prompt train."""
+    # Step 1: Fetch symbols if none in DB (or refresh if >24h old)
+    symbols = [s.symbol for s in db.query(Symbol).all()]
+    if not symbols:
+        exchange_info = fetch_exchange_info()  # CCXT call to /exchangeInfo
+        new_symbols = [s['symbol'] for s in exchange_info['symbols'] if s['status'] == 'TRADING' and s['quoteAsset'] == 'USDT']
+        for sym in new_symbols:
+            db.add(Symbol(symbol=sym))
+        db.commit()
+        logging.info(f"Added {len(new_symbols)} symbols.")
+    else:
+        logging.info("Symbols loaded from DB.")
+
+    # Step 2: Check HRM dataset
+    dataset_path = 'rgb_samples.pt'
+    if not os.path.exists(dataset_path):
+        logging.info("Compiling HRM dataset...")
+        histories = fetch_multi_histories(new_symbols[:50], timeframe='1h', days_back=365)  # Diverse top 50, 1y
+        # Log norm: Relativistic for prices/volume (handle zeros, stabilize variance)
+        for df in histories.values():
+            df['price_log'] = np.log1p(df['close'] - df['close'].min())
+            df['volume_log'] = np.log1p(df['volume'])
+            # Sentiment placeholder (from Santiment)
+            df['sentiment'] = np.random.uniform(0, 1, len(df))  # Replace with real
+        tensor = generate_samples(histories, num_samples=1000)
+        torch.save(tensor, dataset_path)
+        logging.info("Dataset compiled.")
+
+    # Step 3: Check trained model, prompt train
+    model_path = 'hrm_intra.pth'
+    if not os.path.exists(model_path):
+        user_input = input("HRM model not trained. Start training? (y/n): ")
+        if user_input.lower() == 'y':
+            train_hrm(dataset_path)  # Fn below
+        else:
+            logging.warning("Skipping training; some features disabled.")
+
+    # Trade logic ready after checks
+    logging.info("Startup checks complete.")
+
+@app.on_event("startup")
+def startup_event():
+    db = next(get_db())
+    startup_checks(db)
+    scheduler.add_job(lambda: fetch_exchange_info(refresh=True), 'interval', hours=24)  # Daily refresh
+    scheduler.start()
+
+# In ml/hrm_train.py (separate for modularity)
+def train_hrm(dataset_path: str, epochs: int = 50, batch_size: int = 64):
+    dataset = torch.load(dataset_path)  # (1000, 60, 4)
+    loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+    model = HRM().cuda()  # From prior code
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+    criterion = nn.MSELoss()
+    for epoch in range(epochs):
+        for batch in loader:
+            batch = batch.cuda()  # (batch, 60, 4)
+            output = model(batch)  # Forecast
+            loss = criterion(output, batch[:, :output.shape[1], 0])  # Price channel
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+    torch.save(model.state_dict(), 'hrm_intra.pth')
+    logging.info("HRM trained.")

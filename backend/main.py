@@ -6,10 +6,22 @@ import time
 from api.routes import router as api_router
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.datastructures import MutableHeaders
+from starlette.middleware.base import BaseHTTPMiddleware
 import json
 import os
 from pydantic import BaseModel
 from typing import Optional
+import numpy as np
+import torch
+from apscheduler.schedulers.background import BackgroundScheduler
+from sqlalchemy.orm import Session
+
+from ml.data_fetcher import fetch_exchange_info, fetch_multi_histories
+from ml.data_sampler import generate_samples
+from ml.train import train_hrm
+from db.utils import get_db
+from db.models import Symbol, Base
+from db.utils import engine
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -20,6 +32,11 @@ app = FastAPI(
     description="API for the Stockast trading bot and sentiment analysis.",
     version="0.1.0",
 )
+
+scheduler = BackgroundScheduler()
+
+# Create database tables
+Base.metadata.create_all(bind=engine)
 
 # --- API Key Persistence ---
 CONFIG_FILE = "config.json"
@@ -48,7 +65,7 @@ app.add_middleware(
 )
 
 class LoggingMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
+    async def dispatch(self, request: Request, call_next) -> Response:
         start_time = time.time()
         logger.info(f"Request: {request.method} {request.url.path}")
 
@@ -65,6 +82,38 @@ class LoggingMiddleware(BaseHTTPMiddleware):
         return Response(content=response_body, status_code=response.status_code, headers=dict(response.headers), media_type=response.media_type)
 
 app.add_middleware(LoggingMiddleware)
+
+# --- Startup Checks ---
+def startup_checks(db: Session):
+    """
+    Run on app start: Check for API keys and the pre-trained model.
+    """
+    # Step 1: Check for API keys
+    if not os.path.exists(CONFIG_FILE):
+        logging.warning("API keys not found in config.json. Some features may be disabled until keys are provided via the API.")
+    else:
+        logging.info("API keys file found.")
+
+    # Step 2: Check for the pre-trained model
+    model_path = 'hrm_intra.pth'
+    if not os.path.exists(model_path):
+        logging.critical(f"CRITICAL: Pre-trained model '{model_path}' not found.")
+        logging.critical("The application cannot make predictions without the model.")
+        logging.critical("Please run the training script to generate the model: python scripts/build_and_train.py")
+        # In a production environment, you might want to exit here:
+        # sys.exit(1)
+    else:
+        logging.info(f"Pre-trained model '{model_path}' found.")
+
+    # Trade logic ready after checks
+    logging.info("Startup checks complete.")
+
+@app.on_event("startup")
+def startup_event():
+    db = next(get_db())
+    startup_checks(db)
+    scheduler.add_job(lambda: fetch_exchange_info(refresh=True), 'interval', hours=24)  # Daily refresh
+    scheduler.start()
 
 # Include the API router from api/routes.py
 # All routes defined in that file will be prefixed with /api

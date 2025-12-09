@@ -1,3 +1,4 @@
+this is a snippet from the MEXC API response
 GET /api/v3/exchangeInfo (full response is nearly 3KB)
 
 "timezone": "CST",

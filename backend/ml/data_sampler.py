@@ -10,58 +10,13 @@ import torch
 from numpy.polynomial.legendre import Legendre
 
 # Assuming rgb_processor is in ../utils/
-from utils.rgb_processor import convert_to_rgb
-from utils.data_fetcher import fetch_multi_histories
+from ml.rgb_processor import convert_to_rgb
+from ml.data_fetcher import fetch_multi_histories, get_top_symbols, fetch_one_history
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # --- HRM Grid Constants ---
 T, S, H, A = 84, 8, 3, 10
-
-def get_top_symbols(exchange: ccxt.Exchange, limit: int = 50) -> List[str]:
-    """Fetch top spot symbols by quote volume (USDT pairs for diversity)."""
-    try:
-        markets = exchange.load_markets()
-        usdt_pairs = {s for s in markets if s.endswith('/USDT') and markets[s].get('spot', False)}
-        tickers = exchange.fetch_tickers()
-        
-        # Filter tickers that are USDT spot pairs and have quoteVolume
-        valid_tickers = [
-            (symbol, ticker['quoteVolume'])
-            for symbol, ticker in tickers.items()
-            if symbol in usdt_pairs and ticker.get('quoteVolume') is not None
-        ]
-        
-        sorted_pairs = sorted(valid_tickers, key=lambda x: x[1], reverse=True)
-        
-        if not sorted_pairs:
-            logging.warning("Could not fetch tickers or find any with quoteVolume. Falling back to market list.")
-            return list(usdt_pairs)[:limit]
-            
-        return [p[0] for p in sorted_pairs[:limit]]
-    except Exception as e:
-        logging.error(f"Failed to get top symbols: {e}", exc_info=True)
-        return []
-
-def fetch_one_history(sym: str, exchange: ccxt.Exchange, days_back: int = 365) -> Optional[pd.DataFrame]:
-    """Fetch 1y 1h OHLCV for symbol."""
-    since = int((pd.Timestamp.now(tz='UTC') - pd.Timedelta(days=days_back)).timestamp() * 1000)
-    try:
-        ohlcv = exchange.fetch_ohlcv(sym, '1h', since=since, limit=1000)
-        if not ohlcv:
-            logging.warning(f"No OHLCV data returned for {sym}.")
-            return None
-        df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-        df.set_index('timestamp', inplace=True)
-        df.dropna(inplace=True)
-        if len(df) < T * 2:  # Ensure enough data for processing and windowing
-            logging.info(f"Skipping {sym} due to insufficient data points ({len(df)}).")
-            return None
-        return df
-    except Exception as e:
-        logging.error(f"Failed to fetch history for {sym}: {e}")
-        return None
 
 def build_4d_from_histories(histories: Dict[str, pd.DataFrame], lookback=60, horizon=24, hierarchy=3) -> np.ndarray:
     """
@@ -249,95 +204,71 @@ def flatten_to_polynomial_sequence(grid: torch.Tensor, degree=3) -> torch.Tensor
 
     return torch.tensor(all_coeffs, dtype=torch.float32)
 
-def generate_samples(histories: Dict[str, pd.DataFrame], seq_len=60, num_per_sym=20, output_file="rgb_samples.pt") -> None:
+def generate_puzzle_samples(histories: Dict[str, pd.DataFrame], output_dir: str, seq_len=84, num_samples=5000, vocab_size=256):
     """
-    Generates windowed samples from RGB-processed histories and saves them to a file.
+    Generates tokenized "puzzle" samples suitable for the pretrain.py script.
+    This involves quantizing continuous data into a discrete vocabulary.
 
     Args:
         histories (Dict[str, pd.DataFrame]): Dictionary of {symbol: DataFrame}.
-        seq_len (int): The sequence length for each sample.
-        num_per_sym (int): The number of random samples to generate per symbol.
-        output_file (str): The path to save the output tensor.
+        output_dir (str): Directory to save the tokenized data files.
+        seq_len (int): The sequence length for each puzzle.
+        num_samples (int): The total number of samples to generate.
+        vocab_size (int): The number of discrete bins for quantization.
     """
-    all_samples = []
-    
-    logging.info("Starting sample generation...")
+    logging.info(f"Starting puzzle sample generation for pre-training...")
+    os.makedirs(output_dir, exist_ok=True)
 
+    all_series_data = []
     for symbol, df in histories.items():
-        # It's assumed fetch_multi_histories already provides the base data.
-        # We process it to get RGB values.
         try:
             rgb_df = convert_to_rgb(df)
-            if rgb_df is None or rgb_df.empty:
-                logging.warning(f"Could not convert {symbol} to RGB, skipping.")
+            if rgb_df is None or len(rgb_df) < seq_len:
                 continue
-        except Exception as e:
-            logging.error(f"Error converting {symbol} to RGB: {e}", exc_info=True)
-            continue
+            # We only need the 'R', 'G', 'B' channels for this example
+            series = rgb_df[['R', 'G', 'B']].values
+            all_series_data.append(series)
+        except Exception:
+            logging.warning(f"Could not process {symbol} for puzzle generation.", exc_info=True)
 
-        # We need 'R', 'G', 'B', and 'embed_4' (the line value)
-        required_cols = ['R', 'G', 'B', 'embed_4']
-        if not all(col in rgb_df.columns for col in required_cols):
-            logging.warning(f"DataFrame for {symbol} is missing required RGB columns after conversion, skipping.")
-            continue
-            
-        if len(rgb_df) < seq_len:
-            logging.info(f"Skipping {symbol} due to insufficient data points ({len(rgb_df)}) for seq_len {seq_len}.")
-            continue
-
-        sample_data = rgb_df[required_cols].values
-        
-        num_possible_starts = len(sample_data) - seq_len + 1
-        
-        # Choose random start indices for diversity
-        replace = num_possible_starts < num_per_sym
-        start_indices = np.random.choice(num_possible_starts, num_per_sym, replace=replace)
-
-        for start in start_indices:
-            window = sample_data[start : start + seq_len]
-            all_samples.append(window)
-            
-    if not all_samples:
-        logging.error("No samples were generated. Check data fetching and processing steps.")
+    if not all_series_data:
+        logging.error("No valid RGB series data could be generated. Aborting.")
         return
 
-    # Convert to a single tensor
-    tensor = torch.tensor(np.array(all_samples), dtype=torch.float32)
-    
-    # Save the tensor
-    torch.save(tensor, output_file)
-    logging.info(f"Saved tensor with shape {tensor.shape} to {output_file}")
+    # Create windows from all available data
+    all_windows = []
+    for series in all_series_data:
+        num_possible_starts = len(series) - seq_len + 1
+        for i in range(num_possible_starts):
+            all_windows.append(series[i:i+seq_len])
+
+    if len(all_windows) < num_samples:
+        logging.warning(f"Only able to generate {len(all_windows)} samples, requested {num_samples}.")
+        num_samples = len(all_windows)
+
+    # Randomly select final samples and save them as individual tokenized files
+    selected_indices = np.random.choice(len(all_windows), num_samples, replace=False)
+    for i, idx in enumerate(selected_indices):
+        window = all_windows[idx]
+        # Quantize float values (0-255) into discrete integer tokens (0-vocab_size-1)
+        tokens = (window / 256.0 * vocab_size).astype(np.int32)
+        # Save as a flat sequence of tokens, which PuzzleDataset can read
+        tokens.tofile(os.path.join(output_dir, f"puzzle_{i}.bin"))
+
+    logging.info(f"Successfully generated and saved {num_samples} tokenized puzzle files to '{output_dir}'.")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--output", default="rgb_samples.pt", help="Output tensor file")
-    parser.add_argument("--num_samples_per_sym", type=int, default=20, help="Samples per symbol")
-    parser.add_argument("--seq_len", type=int, default=60, help="Sequence length of each sample")
-    parser.add_argument("--days_back", type=int, default=365, help="Days of history to fetch")
-    parser.add_argument("--api_key", help="MEXC API key (optional for public)")
-    parser.add_argument("--secret", help="MEXC secret")
-    args = parser.parse_args()
-    
-    exchange = ccxt.mexc({'apiKey': args.api_key, 'secret': args.secret, 'enableRateLimit': True})
-    
-    # 1. Fetch top symbols
-    symbols = get_top_symbols(exchange, 50)
-    if not symbols:
-        logging.error("Could not retrieve top symbols. Exiting.")
-    else:
-        logging.info(f"Found {len(symbols)} symbols to process.")
-    
-        # 2. Fetch histories for these symbols
-        histories = fetch_multi_histories(symbols, exchange, days_back=args.days_back)
-    
-        if not histories:
-            logging.error("Failed to fetch any historical data. Exiting.")
-        else:
-            # 3. Generate and save samples
-            generate_samples(
-                histories, 
-                seq_len=args.seq_len, 
-                num_per_sym=args.num_samples_per_sym,
-                output_file=args.output
-            )
+    # This block is for demonstration and testing of the data_sampler module.
+    # The primary entry point for building the dataset and training the model
+    # is now located in `scripts/build_and_train.py`.
+    logging.info("Running data_sampler.py as a standalone script for demonstration.")
+    logging.info("This will not train the model. To build the dataset and train, run:")
+    logging.info("python scripts/build_and_train.py")
+
+    # You can add simple test logic here if needed, for example:
+    # exchange = ccxt.mexc()
+    # symbols = get_top_symbols(exchange, 5)
+    # histories = fetch_multi_histories(symbols, days_back=30)
+    # if histories:
+    #     generate_samples(histories, seq_len=60, num_per_sym=5, output_file="test_samples.pt")
