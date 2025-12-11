@@ -11,3 +11,4 @@ frontend/windows/*
 *.log
 gen_src/*
 *.db
+backend/__pycache__/*
