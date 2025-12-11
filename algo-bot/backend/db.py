@@ -2,7 +2,7 @@
 import sqlite3
 import logging
 from datetime import datetime, timedelta
-from typing import List, Any, Dict
+from typing import List, Any, Dict, Optional
 from config import DB_FILE, MAX_KLINES_FAILURES
 from api import api
 
@@ -30,9 +30,8 @@ def create_tables():
         )
     ''')
 
-    # Klines table
     cursor.execute('''
-        CREATE TABLE IF NOT EXISTS klines (
+        CREATE TABLE IF NOT EXISTS klines_1h (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             symbol TEXT,
             timestamp INTEGER,
@@ -44,23 +43,63 @@ def create_tables():
             close_time INTEGER,
             quote_volume REAL,
             ma_10 REAL,
-            ma_30 REAL,
-            ma_60 REAL,
-            ma_200 REAL,
-            rsi_6 REAL,
-            rsi_12 REAL,
-            rsi_24 REAL,
+            ma_50 REAL,
+            rsi_14 REAL,
             macd REAL,
             macd_signal REAL,
             macd_hist REAL,
-            macd_slope TEXT,
-            kdj_k REAL,
-            kdj_d REAL,
-            kdj_j REAL,
-            fib_382 REAL,
-            fib_618 REAL,
-            fib_50 REAL,
+            volume_spike INTEGER DEFAULT 0,
+            vol_ratio_5 REAL DEFAULT 0,
+            vol_ratio_10 REAL DEFAULT 0,
+            volatility_5m REAL DEFAULT 0,
+            volatility_1h REAL DEFAULT 0,
+            hourly_trend REAL DEFAULT 0,
+            prob_score REAL DEFAULT 0,
             UNIQUE(symbol, timestamp),
+            FOREIGN KEY (symbol) REFERENCES symbols (symbol)
+        )
+    ''')
+
+    # New 15m table (similar schema, but vol/volatility tuned for shorter TF)
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS klines_15m (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            symbol TEXT,
+            timestamp INTEGER,
+            open REAL, high REAL, low REAL, close REAL, volume REAL, close_time INTEGER, quote_volume REAL,
+            ma_10 REAL, ma_50 REAL, rsi_14 REAL, macd REAL, macd_signal REAL, macd_hist REAL,
+            volume_spike INTEGER DEFAULT 0, vol_ratio_5 REAL DEFAULT 0, vol_ratio_10 REAL DEFAULT 0,
+            volatility_5m REAL DEFAULT 0, volatility_1h REAL DEFAULT 0, hourly_trend REAL DEFAULT 0,
+            prob_score REAL DEFAULT 0, momentum_roc REAL DEFAULT 0,
+            UNIQUE(symbol, timestamp),
+            FOREIGN KEY (symbol) REFERENCES symbols (symbol)
+        )
+    ''')
+
+    # New 5m table (short-term focus: momentum, volatility)
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS klines_5m (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            symbol TEXT,
+            timestamp INTEGER,
+            open REAL, high REAL, low REAL, close REAL, volume REAL, close_time INTEGER, quote_volume REAL,
+            ma_10 REAL, ma_50 REAL, rsi_14 REAL, macd REAL, macd_signal REAL, macd_hist REAL,
+            volume_spike INTEGER DEFAULT 0, vol_ratio_5 REAL DEFAULT 0, vol_ratio_10 REAL DEFAULT 0,
+            volatility_5m REAL DEFAULT 0, volatility_1h REAL DEFAULT 0, hourly_trend REAL DEFAULT 0,
+            prob_score REAL DEFAULT 0, momentum_roc REAL DEFAULT 0,
+            UNIQUE(symbol, timestamp),
+            FOREIGN KEY (symbol) REFERENCES symbols (symbol)
+        )
+    ''')
+
+    # Top symbols snapshot
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS top_symbols_1h (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp DATETIME,
+            symbol TEXT,
+            prob_score REAL,
+            rank INTEGER,
             FOREIGN KEY (symbol) REFERENCES symbols (symbol)
         )
     ''')
@@ -77,8 +116,23 @@ def create_tables():
             status TEXT DEFAULT 'NEW',
             rsi REAL,
             ma_diff_pct REAL,
+            prob_score REAL DEFAULT 0,
+            confidence REAL DEFAULT 0,
             active_indicators TEXT DEFAULT '',
             FOREIGN KEY (symbol) REFERENCES symbols (symbol)
+        )
+    ''')
+
+    # Strategies table
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS strategies (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT UNIQUE NOT NULL,
+            description TEXT,
+            min_signals INTEGER DEFAULT 3,
+            prob_threshold REAL DEFAULT 0.6,
+            thresholds TEXT,
+            risk_level TEXT DEFAULT 'MEDIUM'
         )
     ''')
 
@@ -98,7 +152,26 @@ def create_tables():
 
     conn.commit()
     conn.close()
+    seed_strategies() # Seed the strategies table with default values
     logger.info("Database tables created successfully.")
+
+def seed_strategies():
+    """Seeds the strategies table with some default configurations."""
+    conn = connect_db()
+    cursor = conn.cursor()
+    try:
+        strategies_to_insert = [
+            ('HIGH_CONFIDENCE', '4 signals, high probability, low risk', 4, 0.7, '{"rsi_oversold": 30, "vol_mult": 2.0, "vol_spike": true}', 'LOW'),
+            ('BALANCED', '3 signals, medium probability, medium risk', 3, 0.5, '{"rsi_oversold": 40, "vol_mult": 1.5}', 'MEDIUM'),
+            ('AGGRESSIVE', '2 signals, lower probability, high risk', 2, 0.3, '{"rsi_oversold": 50, "vol_mult": 1.2}', 'HIGH')
+        ]
+        cursor.executemany('''
+            INSERT OR IGNORE INTO strategies (name, description, min_signals, prob_threshold, thresholds, risk_level)
+            VALUES (?, ?, ?, ?, ?, ?)
+        ''', strategies_to_insert)
+        conn.commit()
+    finally:
+        conn.close()
 
 def init_symbols_db():
     """
@@ -189,39 +262,33 @@ def reset_klines_fail_count(symbol: str):
     finally:
         conn.close()
 
-def save_klines(enriched_klines: List[tuple]):
+def save_klines_by_interval(interval: str, enriched_klines: List[tuple], cols: List[str]):
     """
-    Saves a list of klines with calculated indicators to the database.
-    Uses INSERT OR IGNORE to avoid duplicates.
-    The first element of each tuple in enriched_klines must be the symbol.
+    Saves enriched klines to a timeframe-specific table.
     """
     if not enriched_klines:
         return
 
+    table_name = f'klines_{interval}'
+    placeholders = ','.join(['?' for _ in cols])
+    insert_sql = f'''
+        INSERT OR IGNORE INTO {table_name} ({','.join(cols)})
+        VALUES ({placeholders})
+    '''
+    
     conn = connect_db()
     cursor = conn.cursor()
-
     try:
-        cursor.executemany('''
-            INSERT OR IGNORE INTO klines (
-                symbol, timestamp, open, high, low, close, volume, close_time, quote_volume,
-                ma_10, ma_30, ma_60, ma_200, rsi_6, rsi_12, rsi_24,
-                macd, macd_signal, macd_hist, macd_slope,
-                kdj_k, kdj_d, kdj_j,
-                fib_382, fib_618, fib_50
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', enriched_klines)
+        cursor.executemany(insert_sql, enriched_klines)
         conn.commit()
-        if cursor.rowcount > 0:
-            # Log is now less specific as symbol is part of the tuple list
-            logger.debug(f"Upserted {cursor.rowcount} new klines into the database.")
+        logger.debug(f"Upserted {cursor.rowcount} {interval} klines.")
     except sqlite3.Error as e:
-        logger.error(f"Database error while saving klines: {e}")
+        logger.error(f"DB error saving {interval} klines: {e}")
     finally:
         conn.close()
 
-def save_signal(symbol: str, price: float, volume: float, strategy: str, metrics: Dict[str, Any] = None, active_indicators: List[str] = None):
+def save_signal(symbol: str, price: float, volume: float, strategy: str, metrics: Dict[str, Any] = None, 
+                active_indicators: List[str] = None, prob_score: float = 0.0, confidence: float = 0.0):
     """Saves a detected buy signal to the database, including optional metrics."""
     conn = connect_db()
     cursor = conn.cursor()
@@ -229,14 +296,16 @@ def save_signal(symbol: str, price: float, volume: float, strategy: str, metrics
     rsi = metrics.get('rsi')
     ma_diff_pct = metrics.get('ma_diff_pct')
     indicators_str = ','.join(active_indicators) if active_indicators else ''
+    signal_time = datetime.utcnow()
 
     try:
         cursor.execute('''
-            INSERT INTO signals (symbol, signal_price, signal_time, volume_at_signal, strategy, rsi, ma_diff_pct, active_indicators)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (symbol, price, datetime.utcnow(), volume, strategy, rsi, ma_diff_pct, indicators_str))
+            INSERT INTO signals (symbol, signal_price, signal_time, volume_at_signal, strategy, 
+                                rsi, ma_diff_pct, prob_score, confidence, active_indicators)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (symbol, price, signal_time, volume, strategy, rsi, ma_diff_pct, prob_score, confidence, indicators_str))
         conn.commit()
-        # The previous log is now handled in main.py after the call
+        logger.info(f"Saved signal for {symbol} (ID: {cursor.lastrowid}).")
     except sqlite3.Error as e:
         logger.error(f"Database error while saving signal for {symbol}: {e}")
     finally:
@@ -244,7 +313,7 @@ def save_signal(symbol: str, price: float, volume: float, strategy: str, metrics
 
 def prune_old_klines(days_to_keep: int):
     """
-    Removes kline data older than a specified number of days to keep the DB size manageable.
+    Removes kline data older than a specified number of days from all kline tables.
     """
     conn = connect_db()
     cursor = conn.cursor()
@@ -252,16 +321,97 @@ def prune_old_klines(days_to_keep: int):
     cutoff_date = datetime.utcnow() - timedelta(days=days_to_keep)
     # Timestamps in the DB are in milliseconds
     cutoff_timestamp_ms = int(cutoff_date.timestamp() * 1000)
-    
+    tables_to_prune = ['klines_1h', 'klines_15m', 'klines_5m']
+    total_deleted = 0
+
     try:
         logger.info(f"Pruning kline data older than {days_to_keep} days (before {cutoff_date.strftime('%Y-%m-%d')})...")
-        cursor.execute("DELETE FROM klines WHERE timestamp < ?", (cutoff_timestamp_ms,))
-        
-        rows_deleted = cursor.rowcount
-        conn.commit()
-        
-        logger.info(f"Successfully pruned {rows_deleted} old kline records.")
+        for table in tables_to_prune:
+            try:
+                cursor.execute(f"DELETE FROM {table} WHERE timestamp < ?", (cutoff_timestamp_ms,))
+                rows_deleted = cursor.rowcount
+                if rows_deleted > 0:
+                    logger.debug(f"Pruned {rows_deleted} records from {table}.")
+                total_deleted += rows_deleted
+            except sqlite3.OperationalError as e:
+                if "no such table" in str(e).lower():
+                    logger.debug(f"Table '{table}' not found for pruning, skipping.")
+                else:
+                    raise e
+        if total_deleted > 0:
+            conn.commit()
+            logger.info(f"Successfully pruned {total_deleted} old kline records in total.")
+        else:
+            logger.info("Pruning complete. No old records found to delete.")
     except sqlite3.Error as e:
         logger.error(f"Database error while pruning klines: {e}")
     finally:
         conn.close()
+
+def get_active_symbols_with_history(min_hours: int = 200, interval: str = '1h'):
+    """Get symbols with >= min_hours klines."""
+    table = f'klines_{interval}'
+    conn = connect_db()
+    cursor = conn.cursor()
+    try:
+        # This ensures the table exists before querying.
+        cursor.execute(f"SELECT name FROM sqlite_master WHERE type='table' AND name='{table}'")
+        if cursor.fetchone() is None:
+            logger.warning(f"Table {table} does not exist. Cannot get symbols with history.")
+            return []
+
+        cursor.execute(f'''
+            SELECT DISTINCT s.symbol FROM symbols s
+            INNER JOIN {table} k ON s.symbol = k.symbol
+            WHERE s.is_active = 1 AND s.klines_fail_count < ?
+            GROUP BY s.symbol HAVING COUNT(k.timestamp) >= ?
+        ''', (MAX_KLINES_FAILURES, min_hours))
+        symbols = [row[0] for row in cursor.fetchall()]
+        return symbols
+    finally:
+        conn.close()
+
+def insert_top_symbols(top_list: List[Dict[str, Any]]):
+    """top_list: [{'symbol': 'BTCUSDT', 'prob_score': 0.85, 'rank': 1}, ...]"""
+    conn = connect_db()
+    cursor = conn.cursor()
+    ts = datetime.utcnow()
+    data = [(ts, item['symbol'], item['prob_score'], item['rank']) for item in top_list]
+    try:
+        cursor.executemany('''
+            INSERT INTO top_symbols_1h (timestamp, symbol, prob_score, rank)
+            VALUES (?, ?, ?, ?)
+        ''', data)
+        conn.commit()
+        logger.info(f"Inserted top {len(top_list)} symbols snapshot.")
+        # Prune old snapshots (keep last 24h)
+        cutoff = ts - timedelta(hours=24)
+        cursor.execute("DELETE FROM top_symbols_1h WHERE timestamp < ?", (cutoff,))
+        conn.commit()
+    finally:
+        conn.close()
+
+def get_strategy_config(strategy_name: str):
+    """Fetch strategy row as dict."""
+    conn = sqlite3.connect(DB_FILE)
+    conn.row_factory = sqlite3.Row  # Makes rows dict-like
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM strategies WHERE name = ?", (strategy_name,))
+    row = cursor.fetchone()
+    conn.close()
+    if row:
+        return dict(row)  # Now proper dict
+    return None
+
+def get_latest_top_symbols(n: int = 100) -> List[Dict[str, Any]]:
+    """Return list of dicts from latest snapshot."""
+    conn = connect_db()
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT symbol, prob_score, rank FROM top_symbols_1h
+        WHERE timestamp = (SELECT MAX(timestamp) FROM top_symbols_1h)
+        ORDER BY rank ASC LIMIT ?
+    ''', (n,))
+    symbols = [{'symbol': row[0], 'prob_score': row[1], 'rank': row[2]} for row in cursor.fetchall()]
+    conn.close()
+    return symbols

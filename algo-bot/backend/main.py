@@ -4,13 +4,16 @@ import time
 import sys
 import signal
 import logging
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 import pandas as pd  # For strategies
-from config import DB_FILE, SCAN_BATCH_SIZE, SCAN_INTERVAL, MAX_KLINES_FAILURES, KLINE_HISTORY_DAYS
-from db import (create_tables, init_symbols_db, get_all_symbols, save_klines,
-               increment_klines_fail_count, reset_klines_fail_count, save_signal, prune_old_klines)
+import schedule
+from config import (DB_FILE, SCAN_BATCH_SIZE, SCAN_INTERVAL, MAX_KLINES_FAILURES, 
+                    KLINE_HISTORY_DAYS, VOLUME_THRESHOLD, STRATEGY)
+import config
+from db import (create_tables, init_symbols_db, get_all_symbols, save_signal, prune_old_klines,
+               get_active_symbols_with_history, insert_top_symbols, get_latest_top_symbols, save_klines_by_interval)
 from api import api
-from strategies import get_buy_signal, get_signal_metrics, calculate_and_enrich_klines
+from strategies import get_buy_signal, calculate_and_enrich_klines, evaluate_strategy, get_strategy_metrics
 
 # Global flag for graceful shutdown
 running = True
@@ -20,80 +23,140 @@ def signal_handler(sig, frame):
     logging.info("\nShutting down bot gracefully...")
     running = False
 
-def scan_batch(batch_symbols: List[str]):
-    """
-    Scan a batch of symbols: Fetch klines, check signal, log potentials.
-    """
-    signals_found_in_batch = 0
-    
-    # Fetch all 24hr ticker data once for efficiency
-    logging.info("Fetching all 24hr ticker data...")
-    all_tickers_data = api.get_ticker_24hr()
-    if isinstance(all_tickers_data, dict): # If only one ticker was returned (e.g. if symbol was specified as None but only one exists)
-        all_tickers_data = [all_tickers_data]
-    ticker_map = {ticker['symbol']: ticker for ticker in all_tickers_data}
+# --- Multi-Timeframe Scanning Logic ---
 
-    total_symbols = len(batch_symbols)
-    for i, symbol in enumerate(batch_symbols):
-        progress_message = f"--> Scanning {i + 1}/{total_symbols}: {symbol:<15}"
+TOP_20_15M = [] # Global to hold top candidates from 15m poll
+
+def initial_kline_population():
+    """
+    Performs a one-time scan to populate the klines_1h table for all active symbols.
+    This is necessary on the first run when no historical data exists.
+    """
+    logging.info("Performing initial kline data population for 1h timeframe...")
+    all_symbols = get_all_symbols()
+    total_symbols = len(all_symbols)
+    
+    for i, symbol in enumerate(all_symbols):
+        progress_message = f"--> Initial Population {i + 1}/{total_symbols}: {symbol:<15}"
         sys.stdout.write(f"\r{progress_message}")
         sys.stdout.flush()
         try:
-            # Fetch klines for each symbol synchronously. The _request method handles the delay.
-            # We need at least 201 data points for a 200-period crossover check. Fetching a bit more is safer.
+            # Fetch enough data to satisfy the history check
             klines = api.get_klines(symbol, interval='60m', limit=210)
-            
-            # Calculate indicators and prepare for DB
-            enriched_klines = calculate_and_enrich_klines(symbol, klines)
-            
-            # If klines were successfully fetched, reset the failure count
-            reset_klines_fail_count(symbol)
-            save_klines(enriched_klines)
-
-            # Check strategy signal
-            signal_result = get_buy_signal(klines, strategy='MA_RSI_COMBO')
-            if signal_result.get('signal'):
-                # Clear the progress line before printing the signal
-                sys.stdout.write("\r" + " " * len(progress_message) + "\r")
-                sys.stdout.flush()
-
-                metrics = get_signal_metrics(klines)
-                if metrics:
-                    logging.debug(f"Signal metrics for {symbol}: RSI={metrics['rsi']:.1f}, MA Diff={metrics['ma_diff_pct']:.2f}%, Fib Bounce={metrics.get('fib_bounce_pct', 0):.2f}%")
-
-                # Check liquidity (volume filter)
-                ticker = ticker_map.get(symbol)
-                VOLUME_THRESHOLD = 100000 # Min $100k 24hr volume filter
-                if ticker and 'quoteVolume' in ticker and ticker['quoteVolume'] is not None:
-                    volume = float(ticker['quoteVolume'])
-                    if volume > VOLUME_THRESHOLD:
-                        # Fetch current price (this is a single call, could be optimized if needed)
-                        current_price_data = api.get_price(symbol)
-                        current_price = float(current_price_data['price']) if current_price_data and 'price' in current_price_data else 0.0
-
-                        strategy_name = '+'.join(signal_result['active_indicators']) if signal_result['active_indicators'] else "UNKNOWN"
-                        logging.info(f"BUY SIGNAL: {symbol} at ${current_price:.4f} (24hr Vol: ${volume:,.2f}) | Indicators: {strategy_name} | Strength: {signal_result['strength']:.2f}")
-                        save_signal(symbol, current_price, volume, strategy_name, metrics, signal_result['active_indicators'])
-                        signals_found_in_batch += 1
-                else:
-                    logging.debug(f"Signal for {symbol} but 24hr ticker data or quoteVolume missing. Skipping.")
-
-        except ValueError as e: # This is the error raised by our _request method on API/HTTP failure
-            logging.debug(f"Skipping {symbol}: Kline fetch failed: {e}. Incrementing failure count.")
-            increment_klines_fail_count(symbol)
-            continue
+            if klines:
+                enriched_data, enriched_cols = calculate_and_enrich_klines(symbol, klines, interval='1h')
+                save_klines_by_interval('1h', enriched_data, enriched_cols)
         except Exception as e:
-            logging.error(f"Error processing strategy for {symbol}: {e}", exc_info=True)
-            continue  # Skip on error, don't halt batch
+            # Using debug level to avoid flooding console on first run if many symbols fail
+            logging.debug(f"Error during initial population for {symbol}: {e}")
+            continue
+            
+    sys.stdout.write("\r" + " " * 80 + "\r") # Clear progress line
+    sys.stdout.flush()
+    logging.info("Initial kline data population complete.")
+
+def hourly_scan():
+    """Full 1h scan: Filter history, compute probs, rank top 100."""
+    symbols = get_active_symbols_with_history(200, '1h')
+    logging.info(f"Hourly scan starting for {len(symbols)} symbols with >=200h history.")
+    top_candidates = []
+    for i, symbol in enumerate(symbols):
+        progress_message = f"--> Hourly Scan {i + 1}/{len(symbols)}: {symbol:<15}"
+        sys.stdout.write(f"\r{progress_message}")
+        sys.stdout.flush()
+        try:
+            klines = api.get_klines(symbol, interval='60m', limit=210)
+            enriched_data, enriched_cols = calculate_and_enrich_klines(symbol, klines, interval='1h')
+            save_klines_by_interval('1h', enriched_data, enriched_cols)
+            
+            df = pd.DataFrame(enriched_data, columns=enriched_cols)
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+            df.set_index('timestamp', inplace=True)
+            
+            result = evaluate_strategy(df, config.STRATEGY)
+            if result['prob_score'] > 0:  # Positive bias
+                top_candidates.append({'symbol': symbol, 'prob_score': result['prob_score'], 'confidence': result['confidence']})
+        except Exception as e:
+            logging.error(f"Hourly error for {symbol}: {e}")
+            continue
     
-    # After the loop, clear the progress line.
-    sys.stdout.write("\r" + " " * 80 + "\r")
+    sys.stdout.write("\r" + " " * 80 + "\r") # Clear progress line
     sys.stdout.flush()
 
-    if signals_found_in_batch > 0:
-        logging.info(f"Batch scan complete: {signals_found_in_batch} potential buys found and saved to DB.")
+    # Rank and save top 100
+    if top_candidates:
+        top_100 = sorted(top_candidates, key=lambda x: x['prob_score'], reverse=True)[:100]
+        top_list = [{'symbol': item['symbol'], 'prob_score': item['prob_score'], 'rank': i+1} for i, item in enumerate(top_100)]
+        insert_top_symbols(top_list)
+        logging.info(f"Hourly scan complete: Top 100 saved. Highest prob: {top_100[0]['prob_score']:.2f}")
     else:
-        logging.info(f"Batch scan complete: No signals.")
+        logging.info("Hourly scan complete: No promising candidates found.")
+
+def poll_15m():
+    """Poll top 100 on 15m: Update data, re-rank top 20."""
+    global TOP_20_15M
+    top_100 = get_latest_top_symbols(100)
+    if not top_100:
+        logging.info("15m poll: No top symbols from hourly scan to process.")
+        return
+    
+    logging.info(f"15m poll: Updating {len(top_100)} top symbols.")
+    top_20_candidates = []
+    for item in top_100:
+        symbol = item['symbol']
+        try:
+            klines = api.get_klines(symbol, interval='15m', limit=100)  # Shorter history
+            enriched_data, enriched_cols = calculate_and_enrich_klines(symbol, klines, interval='15m')
+            save_klines_by_interval('15m', enriched_data, enriched_cols)
+            
+            df = pd.DataFrame(enriched_data, columns=enriched_cols)
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+            df.set_index('timestamp', inplace=True)
+            
+            result = evaluate_strategy(df, config.STRATEGY)  # Refine prob with 15m data
+            if result['prob_score'] > 0.4:  # Threshold for top 20
+                top_20_candidates.append({'symbol': symbol, 'prob_score': result['prob_score']})
+        except Exception as e:
+            logging.error(f"15m error for {symbol}: {e}")
+            continue
+            
+    TOP_20_15M = sorted(top_20_candidates, key=lambda x: x['prob_score'], reverse=True)[:20]
+    if TOP_20_15M:
+        logging.info(f"15m poll complete: Top 20 ranked. Highest prob: {TOP_20_15M[0]['prob_score']:.2f}")
+    else:
+        logging.info("15m poll complete: No candidates met the threshold for the top 20.")
+
+def poll_5m_confirm():
+    """5m momentum check on top 20: Trigger buys if flat/slowing."""
+    global TOP_20_15M
+    if not TOP_20_15M:
+        logging.debug("5m confirm: No candidates from 15m poll to check.")
+        return
+        
+    logging.info(f"5m confirm: Checking momentum on {len(TOP_20_15M)} candidates.")
+    for item in TOP_20_15M:
+        symbol = item['symbol']
+        try:
+            klines = api.get_klines(symbol, interval='5m', limit=50)  # Short for momentum
+            enriched_data, enriched_cols = calculate_and_enrich_klines(symbol, klines, interval='5m')
+            save_klines_by_interval('5m', enriched_data, enriched_cols)
+            
+            df = pd.DataFrame(enriched_data, columns=enriched_cols)
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+            df.set_index('timestamp', inplace=True)
+            
+            momentum = df['momentum_roc'].iloc[-1] if 'momentum_roc' in df and not pd.isna(df['momentum_roc'].iloc[-1]) else 0
+            if momentum >= 0:  # Flat/slowing up (not down)
+                current_price = float(api.get_price(symbol)['price'])
+                sl = current_price * 0.95  # 5% stop
+                tp = current_price * 1.10  # 10% take
+                logging.info(f"BUY TRIGGER: {symbol} at ${current_price:.4f} | Momentum: {momentum:.2f}% | SL: ${sl:.4f}, TP: ${tp:.4f}")
+                metrics = get_strategy_metrics(df)
+                save_signal(symbol, current_price, 0, config.STRATEGY, metrics, [], item['prob_score'], 0)
+        except Exception as e:
+            logging.error(f"5m error for {symbol}: {e}")
+            continue
+    logging.info("5m confirm complete.")
 
 def main():
     """
@@ -153,28 +216,32 @@ def main():
         else:
             print("Invalid choice, please try again.")
 
-    # Get symbols
-    symbols = get_all_symbols()
-    logging.info(f"Loaded {len(symbols)} active symbols from the database (excluding those with too many kline fetch failures).")
-
-    # Main scanning loop
-    logging.info("Starting scanning loop. Press Ctrl+C to stop.")
-    batch_size = SCAN_BATCH_SIZE  # e.g., 50
-    while running:
-        for i in range(0, len(symbols), batch_size):
-            if not running:
-                break
-            batch = symbols[i:i + batch_size]
-            logging.info(f"Scanning batch {i//batch_size + 1}/{(len(symbols)-1)//batch_size + 1} ({len(batch)} symbols)...")
-            scan_batch(batch)
-            time.sleep(SCAN_INTERVAL)  # 60s between batches
+    # --- Initial Data Population Check ---
+    # If no symbols have enough history, run a one-time scan to populate the DB.
+    symbols_with_history = get_active_symbols_with_history(200, '1h')
+    if not symbols_with_history:
+        logging.warning("No symbols with sufficient 1h kline history found. Starting initial data population...")
+        initial_kline_population()
         
-        if running:
-            # Prune old kline data after each full cycle
-            prune_old_klines(KLINE_HISTORY_DAYS)
-            
-            logging.info("Full scan cycle complete. Restarting in 60s...")
-            time.sleep(60)  # Pause between full cycles
+        # After populating 1h data, run an initial hourly scan to get top symbols
+        logging.info("Running initial hourly scan to rank symbols...")
+        hourly_scan()
+        # After ranking, run an initial 15m poll to populate its data
+        logging.info("Running initial 15m poll for top symbols...")
+        poll_15m()
+    
+    # --- Schedule Jobs ---
+    logging.info("Scheduling scanning jobs...")
+    schedule.every().hour.at(":01").do(hourly_scan) # Run 1 min past the hour
+    schedule.every(15).minutes.do(poll_15m)
+    schedule.every(5).minutes.do(poll_5m_confirm)
+
+    prune_old_klines(KLINE_HISTORY_DAYS)  # Initial prune on startup
+
+    logging.info("Scheduler started. Waiting for jobs...")
+    while running:
+        schedule.run_pending()
+        time.sleep(1) # Sleep to prevent high CPU usage
 
     logging.info("Bot stopped.")
 
