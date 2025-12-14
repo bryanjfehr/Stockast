@@ -4,8 +4,9 @@ import logging
 from typing import Dict, Any, List, Optional
 import pandas as pd
 import numpy as np
-from indicators import (calculate_sma, calculate_rsi, calculate_macd, volume_spike, volume_ratio, 
-                       calculate_volatility, hourly_trend, calculate_probability_score_series, momentum_roc)
+from indicators import (calculate_sma, calculate_rsi, calculate_macd, volume_spike,
+                        volume_ratio, calculate_volatility, hourly_trend, 
+                        calculate_probability_score_series, momentum_roc, calculate_atr, calculate_adx)
 from db import get_strategy_config  # New func: Fetch by name
 from config import DB_COLS_1H, DB_COLS_15M, DB_COLS_5M, MOMENTUM_PERIODS
 
@@ -39,12 +40,14 @@ def calculate_and_enrich_klines(symbol: str, klines: List[List[str]], interval: 
     df['hourly_trend'] = hourly_trend(df)
     df['prob_score'] = calculate_probability_score_series(df)
     df['momentum_roc'] = momentum_roc(df['close'], periods=MOMENTUM_PERIODS)
+    df['atr'] = calculate_atr(df)
+    df['adx'] = calculate_adx(df)
     
     df['symbol'] = symbol
     df.replace({np.nan: None}, inplace=True)
     
     # --- Select columns based on interval ---
-    if interval == '1h':
+    if interval in ('1h', '60m'):
         db_columns = DB_COLS_1H
     elif interval == '15m':
         db_columns = DB_COLS_15M
@@ -80,23 +83,28 @@ def evaluate_strategy(df: pd.DataFrame, strategy_name: str = 'BALANCED') -> Dict
         'rsi_oversold': is_valid(latest['rsi_14']) and latest['rsi_14'] < thresholds.get('rsi_oversold', 30),
         'vol_spike': is_valid(latest['volume_spike']) and latest['volume_spike'] == 1 and thresholds.get('vol_spike', True),
         'vol_ratio_high': is_valid(latest['vol_ratio_5']) and latest['vol_ratio_5'] > thresholds.get('vol_mult', 1.5),
-        'trend_bull': is_valid(latest['hourly_trend']) and latest['hourly_trend'] > 0,
+        'trend_bull': is_valid(latest['hourly_trend']) and latest['hourly_trend'] > thresholds.get('trend_min', 0.5),
         'ma_cross': is_valid(latest['ma_10']) and is_valid(latest['ma_50']) and latest['ma_10'] > latest['ma_50'],
         'macd_bull': is_valid(latest['macd_hist']) and latest['macd_hist'] > 0,
         'high_vol': is_valid(latest['volatility_1h']) and latest['volatility_1h'] > 0.02,
-        'prob_up': is_valid(latest['prob_score']) and latest['prob_score'] > 0
+        'prob_up': is_valid(latest['prob_score']) and latest['prob_score'] > 0,
+        # Add momentum check
+        'momentum_ok': latest.get('momentum_roc', 0) > thresholds.get('momentum_min', 0),
+        'strong_trend': is_valid(latest.get('adx')) and latest.get('adx', 0) > thresholds.get('adx_threshold', 25),
     }
     
     active_signals = [k for k, v in indicators.items() if v]
     signal_count = len(active_signals)
     prob_score = latest['prob_score'] if is_valid(latest['prob_score']) else 0.0
+    momentum_ok = indicators.get('momentum_ok', False)
     
     confidence = min(signal_count / len(indicators), 1.0) * (prob_score if prob_score > 0 else 0)
     
-    signal = (signal_count >= min_signals) and (prob_score >= prob_threshold)
+    # In signal condition:
+    signal = (signal_count >= min_signals) and (prob_score >= prob_threshold) and momentum_ok
     
     if signal:
-        logger.info(f"STRATEGY '{strategy_name}': {signal_count}/{len(indicators)} signals | Prob: {prob_score:.2f} | Confidence: {confidence:.2f} | Active: {', '.join(active_signals)}")
+        logger.debug(f"STRATEGY '{strategy_name}': {signal_count}/{len(indicators)} signals | Prob: {prob_score:.2f} | Confidence: {confidence:.2f} | Active: {', '.join(active_signals)}")
     
     return {
         'signal': signal,
@@ -107,14 +115,14 @@ def evaluate_strategy(df: pd.DataFrame, strategy_name: str = 'BALANCED') -> Dict
     }
 
 # get_buy_signal alias for backward compat
-def get_buy_signal(klines: List[List[str]], strategy_name: str = 'BALANCED') -> Dict[str, Any]:
+def get_buy_signal(klines: List[List[str]], strategy_name: str = 'BALANCED', interval: str = '1h') -> Dict[str, Any]:
     # Enrich raw klines to create the DataFrame needed by evaluate_strategy.
     # This is necessary for the backtester to function correctly. Assumes 1h for backtesting.
-    enriched_tuples = calculate_and_enrich_klines("BACKTEST", klines)
-    if not enriched_tuples:
+    enriched_tuples, enriched_cols = calculate_and_enrich_klines("BACKTEST", klines, interval)
+    if not enriched_tuples or not enriched_cols:
         return {'signal': False, 'active_indicators': [], 'prob_score': 0.0, 'confidence': 0.0, 'signal_count': 0}
     
-    df = pd.DataFrame(enriched_tuples, columns=DB_COLS)
+    df = pd.DataFrame(enriched_tuples, columns=enriched_cols)
     df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
     df.set_index('timestamp', inplace=True)
     df.sort_index(inplace=True)

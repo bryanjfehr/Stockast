@@ -55,6 +55,8 @@ def create_tables():
             volatility_1h REAL DEFAULT 0,
             hourly_trend REAL DEFAULT 0,
             prob_score REAL DEFAULT 0,
+            atr REAL DEFAULT 0,
+            adx REAL DEFAULT 0,
             UNIQUE(symbol, timestamp),
             FOREIGN KEY (symbol) REFERENCES symbols (symbol)
         )
@@ -161,18 +163,19 @@ def seed_strategies():
     cursor = conn.cursor()
     try:
         strategies_to_insert = [
-            ('HIGH_CONFIDENCE', '4 signals, high probability, low risk', 4, 0.7, '{"rsi_oversold": 30, "vol_mult": 2.0, "vol_spike": true}', 'LOW'),
-            ('BALANCED', '3 signals, medium probability, medium risk', 3, 0.5, '{"rsi_oversold": 40, "vol_mult": 1.5}', 'MEDIUM'),
-            ('AGGRESSIVE', '2 signals, lower probability, high risk', 2, 0.3, '{"rsi_oversold": 50, "vol_mult": 1.2}', 'HIGH')
+            ('HIGH_CONFIDENCE', 'Stricter with momentum/trend', 3, 0.4, '{"rsi_oversold": 35, "vol_mult": 2.0, "vol_spike": true, "trend_min": 0.5, "momentum_min": 0}', 'LOW'),
+            ('BALANCED', 'Balanced with momentum', 3, 0.5, '{"rsi_oversold": 40, "vol_mult": 1.8, "vol_spike": true, "trend_min": 0.3, "momentum_min": -0.5}', 'MEDIUM'),
+            ('AGGRESSIVE', 'Aggressive with light momentum', 3, 0.4, '{"rsi_oversold": 45, "vol_mult": 1.5, "vol_spike": true, "trend_min": 0.1, "momentum_min": -1.0}', 'HIGH')
         ]
         cursor.executemany('''
             INSERT OR IGNORE INTO strategies (name, description, min_signals, prob_threshold, thresholds, risk_level)
             VALUES (?, ?, ?, ?, ?, ?)
         ''', strategies_to_insert)
         conn.commit()
+        logger.info("Seeded strategies with tuned params.")
     finally:
         conn.close()
-
+        
 def init_symbols_db():
     """
     Initializes/updates the symbols table from the MEXC API.

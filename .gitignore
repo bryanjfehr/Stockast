@@ -12,3 +12,4 @@ frontend/windows/*
 gen_src/*
 *.db
 backend/__pycache__/*
+algo-bot/backend/grid_search_results.csv

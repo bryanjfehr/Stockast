@@ -24,13 +24,18 @@ SCAN_INTERVAL = 5    # Seconds between batches
 MAX_KLINES_FAILURES = 5 # Max consecutive kline fetch failures before a symbol is marked inactive
 KLINE_HISTORY_DAYS = 30 # How many days of kline data to keep in the database
 MOMENTUM_PERIODS = 10 # For ROC calculation
+ATR_MULT_SL = 1.5
+LONG_TF = '4h' # Higher timeframe for trend filtering
+MONTHLY_BACKTEST = True # For 15m, chunk by month to avoid API limits
+ATR_MULT_TP = 2.5
+ADX_THRESHOLD = 25
 
 # --- DB Column Definitions ---
 DB_COLS_1H = [
     'symbol', 'timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_volume',
     'ma_10', 'ma_50', 'rsi_14', 'macd', 'macd_signal', 'macd_hist',
-    'volume_spike', 'vol_ratio_5', 'vol_ratio_10', 'volatility_5m', 'volatility_1h', 
-    'hourly_trend', 'prob_score'
+    'volume_spike', 'vol_ratio_5', 'vol_ratio_10', 'volatility_5m', 'volatility_1h',
+    'hourly_trend', 'prob_score', 'momentum_roc', 'atr', 'adx'
 ]
 DB_COLS_15M = DB_COLS_1H + ['momentum_roc']
 DB_COLS_5M = [
