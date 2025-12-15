@@ -12,7 +12,7 @@ MEXC_API_SECRET = os.getenv("MEXC_API_SECRET")
 MEXC_API_BASE = "https://api.mexc.com"  # Base URL for MEXC public API endpoints
 
 # Database
-DB_FILE = "bot.db"
+DB_FILE = "bot.db" # Centralized database file
 
 # Trading parameters (for single-symbol testing; scanning uses all symbols)
 SYMBOL = "BTCUSDT"  # Note: Use MEXC format (no underscore)
@@ -25,8 +25,8 @@ MAX_KLINES_FAILURES = 5 # Max consecutive kline fetch failures before a symbol i
 KLINE_HISTORY_DAYS = 30 # How many days of kline data to keep in the database
 MOMENTUM_PERIODS = 10 # For ROC calculation
 ATR_MULT_SL = 1.5
-LONG_TF = '4h' # Higher timeframe for trend filtering
-MONTHLY_BACKTEST = True # For 15m, chunk by month to avoid API limits
+LONG_TF = '1d'  # Higher timeframe for trend filtering (e.g., '4h', '1d')
+MONTHLY_BACKTEST = True # Set to True to enable monthly chunking for 15m historical data fetching in backtest.py
 ATR_MULT_TP = 2.5
 ADX_THRESHOLD = 25
 

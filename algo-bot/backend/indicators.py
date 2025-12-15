@@ -167,8 +167,8 @@ def calculate_probability_score_series(df: pd.DataFrame) -> pd.Series:
     vol_1h = calculate_volatility(df, interval='1h').fillna(0)
     scores_df['vol_1h'] = np.where(vol_1h > 0.02, 0.5 * scores_df['trend'], -0.5 * scores_df['trend'])
     
-    ma_short = calculate_sma(df['close'], 10).fillna(method='bfill')  # Backfill early NaNs
-    ma_long = calculate_sma(df['close'], 50).fillna(method='bfill')
+    ma_short = calculate_sma(df['close'], 10).bfill()  # Backfill early NaNs
+    ma_long = calculate_sma(df['close'], 50).bfill()
     scores_df['ma_cross'] = np.where(ma_short > ma_long, 1, -1)
 
     # Add momentum score

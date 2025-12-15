@@ -8,8 +8,9 @@ from datetime import datetime
 import pandas as pd
 import numpy as np
 
-from config import ADX_THRESHOLD, ATR_MULT_SL, ATR_MULT_TP, LONG_TF, MONTHLY_BACKTEST
-from strategies import evaluate_strategy, calculate_and_enrich_klines
+from config import ADX_THRESHOLD, ATR_MULT_SL, ATR_MULT_TP, LONG_TF, MONTHLY_BACKTEST, DB_FILE, MEXC_API_BASE
+from strategies import evaluate_strategy, calculate_and_enrich_klines # Import MEXC_API_BASE from config
+from db import save_raw_klines, fetch_raw_klines, create_tables # Import new raw kline DB functions
 
 # --- Config ---
 SYMBOLS_TO_TEST = ["BTCUSDT", "XRPUSDT", "ETHUSDT", "DASHUSDT", "DOGEUSDT"]
@@ -24,47 +25,10 @@ DB_FILE = "backtest.db"
 TRADE_FEE_PCT = 0.0005
 POSITION_SIZE_PCT = 0.02
 MAX_HOLD_HOURS = 72  # Longer hold
-RISK_FREE_RATE = 0.02
-MEXC_API_BASE = "https://api.mexc.com"
+RISK_FREE_RATE = 0.02 # Moved MEXC_API_BASE to config.py
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s", handlers=[logging.StreamHandler(sys.stdout)])
 
-def init_db():
-    """Initializes the database and creates the klines table if it doesn't exist."""
-    with sqlite3.connect(DB_FILE) as conn:
-        cursor = conn.cursor()
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS klines (
-                symbol TEXT,
-                interval TEXT,
-                timestamp INTEGER,
-                open REAL,
-                high REAL,
-                low REAL,
-                close REAL,
-                volume REAL,
-                close_time INTEGER,
-                quote_volume REAL,
-                PRIMARY KEY (symbol, interval, timestamp)
-            )
-        """)
-        conn.commit()
-
-def save_klines_to_db(symbol, interval, klines):
-    """Saves a list of klines to the database, ignoring duplicates."""
-    with sqlite3.connect(DB_FILE) as conn:
-        cursor = conn.cursor()
-        data_to_insert = [
-            (symbol, interval, int(k[0]), float(k[1]), float(k[2]), float(k[3]), float(k[4]), float(k[5]), int(k[6]), float(k[7]))
-            for k in klines
-        ]
-        cursor.executemany("""
-            INSERT OR IGNORE INTO klines 
-            (symbol, interval, timestamp, open, high, low, close, volume, close_time, quote_volume) 
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, data_to_insert)
-        conn.commit()
-        logging.info(f"Saved {len(data_to_insert)} klines for {symbol} to {DB_FILE}")
 def get_long_trend(symbol, tf=LONG_TF):
     """Fetch higher TF (4h/1d) for bull/bear filter: 1 bull (close>SMA200), -1 bear, 0 neutral."""
     klines_htf = get_historical_data(symbol, START_DATE, END_DATE, tf)
@@ -79,26 +43,14 @@ def get_long_trend(symbol, tf=LONG_TF):
     elif close < sma200 * 0.99: # 1% buffer for bearish
         return -1
     return 0
-def fetch_klines_from_db(symbol, interval, start_ts, end_ts):
-    """Fetches klines from the database within a specified time range."""
-    with sqlite3.connect(DB_FILE) as conn:
-        cursor = conn.cursor()
-        cursor.execute("""
-            SELECT timestamp, open, high, low, close, volume, close_time, quote_volume 
-            FROM klines 
-            WHERE symbol = ? AND interval = ? AND timestamp >= ? AND timestamp <= ?
-            ORDER BY timestamp ASC
-        """, (symbol, interval, start_ts, end_ts))
-        return cursor.fetchall()
-
 def get_historical_data(symbol, start_date_str, end_date_str, interval, monthly_chunks=False):
     """Fetches historical data from DB, falling back to API if needed."""
     start_ts = int(datetime.strptime(start_date_str, "%Y-%m-%d").timestamp() * 1000)
     end_ts = int(datetime.strptime(end_date_str, "%Y-%m-%d").timestamp() * 1000) + 86400000
 
     logging.info(f"Attempting to fetch data for {symbol} from DB...")
-    db_klines = fetch_klines_from_db(symbol, interval, start_ts, end_ts)
-    # Check if we have at least 99% of the expected hourly candles
+    db_klines = fetch_raw_klines(symbol, interval, start_ts, end_ts)
+    # Check if we have at least 99% of the expected candles for the given interval
     expected_candles = (end_ts - start_ts) / 3600000
     if db_klines and len(db_klines) > expected_candles * 0.99:
         logging.info(f"Found {len(db_klines)} klines for {symbol} in database. Using cached data.")
@@ -107,7 +59,7 @@ def get_historical_data(symbol, start_date_str, end_date_str, interval, monthly_
     all_klines = []
     logging.info(f"Insufficient data in DB. Fetching from API for {symbol} ({interval}) from {start_date_str} to {end_date_str}...")
 
-    if monthly_chunks and interval == '15m':
+    if monthly_chunks and interval == '15m': # Only chunk 15m data monthly
         current_date = datetime.strptime(start_date_str, "%Y-%m-%d")
         end_dt = datetime.strptime(end_date_str, "%Y-%m-%d")
         
@@ -118,7 +70,7 @@ def get_historical_data(symbol, start_date_str, end_date_str, interval, monthly_
             next_month_start = (current_date.replace(day=1) + pd.DateOffset(months=1))
             month_end_dt_limit = min(next_month_start - pd.Timedelta(seconds=1), end_dt) # End of day for month
             month_end_ts = int(month_end_dt_limit.timestamp() * 1000)
-            
+
             logging.info(f"Fetching {interval} for {symbol} from {current_date.strftime('%Y-%m-%d')} to {month_end_dt_limit.strftime('%Y-%m-%d')} (monthly chunk)")
             
             current_chunk_start = month_start_ts
@@ -145,15 +97,27 @@ def get_historical_data(symbol, start_date_str, end_date_str, interval, monthly_
                 except requests.exceptions.RequestException as e:
                     logging.error(f"Raw fetch error for month chunk: {e}")
                     break
-            current_date = next_month_start # Move to the next month
+            current_date = next_month_start # Move to the next month's start
     else: # Existing logic for non-monthly chunked fetching
         current_start = start_ts
-        interval_ms = 3600000 if interval == '1h' else (60000 * 15 if interval == '15m' else 3600000 * 4) # Default to 1h, 15m, or 4h
-        
+        if interval == '1h':
+            interval_ms = 3600000 # 1 hour
+        elif interval == '15m':
+            interval_ms = 60000 * 15 # 15 minutes
+        elif interval == '4h':
+            interval_ms = 3600000 * 4 # 4 hours
+        elif interval == '1d':
+            interval_ms = 3600000 * 24 # 1 day
+        else:
+            interval_ms = 3600000 # Default to 1 hour if unknown
+
+        # Map '1h' to '60m' for the MEXC API call, as '1h' is not supported.
+        api_interval = '60m' if interval == '1h' else interval
+
         while current_start < end_ts:
             params = {
                 'symbol': symbol,
-                'interval': interval,
+                'interval': api_interval,
                 'limit': 1000,
                 'startTime': current_start,
                 'endTime': end_ts
@@ -179,11 +143,14 @@ def get_historical_data(symbol, start_date_str, end_date_str, interval, monthly_
         df_temp.drop_duplicates('timestamp', inplace=True)
         df_temp.sort_values('timestamp', inplace=True)
         all_klines = df_temp[['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_volume']].values.tolist()
-        # Save the newly fetched data to the DB for next time
-        save_klines_to_db(symbol, interval, all_klines)
+        # Save the newly fetched raw data to the DB for next time
+        save_raw_klines(symbol, interval, all_klines)
 
-    first, last = all_klines[0][0] if all_klines else 0, all_klines[-1][0] if all_klines else 0
-    logging.info(f"Fetched {len(all_klines)} unique klines from {datetime.fromtimestamp(first/1000)} to {datetime.fromtimestamp(last/1000)}")
+    if all_klines:
+        first, last = all_klines[0][0], all_klines[-1][0]
+        logging.info(f"Fetched {len(all_klines)} unique klines from {datetime.fromtimestamp(first/1000)} to {datetime.fromtimestamp(last/1000)}")
+    else:
+        logging.info("Fetched 0 unique klines.")
     return all_klines
 
 # run_backtest (with momentum filter)
@@ -212,7 +179,7 @@ def run_backtest(klines, initial_capital, sl_mult, tp_mult, strategy_name, inter
     
     for i in range(len(df)):
         current_price = df['close'].iloc[i]
-        portfolio_value = cash + (position['quantity'] * current_price if position else 0)
+        portfolio_value = cash + (position['quantity'] * current_price if position else 0) # Current portfolio value
         portfolio_values.append(portfolio_value)
         
         if i < 250:
@@ -232,7 +199,7 @@ def run_backtest(klines, initial_capital, sl_mult, tp_mult, strategy_name, inter
         if position is None:
             # Enhanced entry: MA cross implied in result; add vol filter
             vol_ratio = df_slice['vol_ratio_5'].iloc[-1] if 'vol_ratio_5' in df_slice and not pd.isna(df_slice['vol_ratio_5'].iloc[-1]) else 0
-            is_trending = adx > adx_threshold and volatility_1h > 0.03 # Volatility filter
+            is_trending = adx > adx_threshold and volatility_1h > 0.03 # Volatility filter (ADX > threshold and 1h vol > 3%)
             if result['signal'] and prob_score > 0.5 and momentum > -0.5 and prev_momentum > momentum and vol_ratio > 1.2 and is_trending:
                 position_size = (portfolio_value * POSITION_SIZE_PCT) * (1 + result.get('confidence', 0.0))  # Scale by confidence
                 quantity = position_size / current_price
@@ -256,7 +223,7 @@ def run_backtest(klines, initial_capital, sl_mult, tp_mult, strategy_name, inter
             # Trailing stop: Update high, trail 3%
             if current_price > trailing_high:
                 trailing_high = current_price
-            trail_stop = trailing_high * (1 - 0.03)
+            trail_stop = trailing_high * (1 - 0.03) # 3% trailing stop
             
             sell = (current_price >= tp_price or current_price <= sl_price or 
                     current_price <= trail_stop or hold_hours >= MAX_HOLD_HOURS or 
@@ -352,8 +319,8 @@ def calculate_and_print_metrics(symbol, portfolio, trades, initial_capital, stra
     }
 
 def main():
-    # Initialize the database
-    init_db()
+    # Ensure the database and all tables are created before running the backtest
+    create_tables()
 
     # Grid search example
     sl_multipliers = [1.0, 1.5, 2.0, 2.5]  # ATR multipliers for Stop Loss
@@ -378,7 +345,7 @@ def main():
             # Grid search over ATR multipliers
             for sl in sl_multipliers:
                 for tp in tp_multipliers:
-                    for adx in adx_thresholds:
+                    for adx in adx_thresholds: # ADX threshold for strong trend
                         trades, portfolio = run_backtest(klines, INITIAL_CAPITAL, sl, tp, strategy_name, API_INTERVAL, adx_threshold=adx, long_trend_filter=long_trend)
                         metrics = calculate_and_print_metrics(symbol, portfolio, trades, INITIAL_CAPITAL, strategy_name, sl, tp, adx)
                         if metrics:

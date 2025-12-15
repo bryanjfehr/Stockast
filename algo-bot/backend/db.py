@@ -1,7 +1,8 @@
 # db.py
 import sqlite3
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+import pandas as pd
 from typing import List, Any, Dict, Optional
 from config import DB_FILE, MAX_KLINES_FAILURES
 from api import api
@@ -15,8 +16,25 @@ def connect_db():
 def create_tables():
     """Creates the necessary database tables if they don't exist."""
     conn = connect_db()
+    conn.execute("PRAGMA foreign_keys = ON") # Enable foreign key support
     cursor = conn.cursor()
 
+    # Raw Klines table (for all intervals)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS raw_klines (
+            symbol TEXT,
+            interval TEXT,
+            timestamp INTEGER,
+            open REAL,
+            high REAL,
+            low REAL,
+            close REAL,
+            volume REAL,
+            close_time INTEGER,
+            quote_volume REAL,
+            PRIMARY KEY (symbol, interval, timestamp)
+        )
+    """)
     # Symbols table
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS symbols (
@@ -94,11 +112,14 @@ def create_tables():
         )
     ''')
 
+    # New sentiment daily table
+    create_sentiment_table()
+
     # Top symbols snapshot
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS top_symbols_1h (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp DATETIME,
+            timestamp INTEGER, -- Store as INTEGER (Unix timestamp in ms)
             symbol TEXT,
             prob_score REAL,
             rank INTEGER,
@@ -112,7 +133,7 @@ def create_tables():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             symbol TEXT,
             signal_price REAL,
-            signal_time DATETIME,
+            signal_time INTEGER, -- Store as INTEGER (Unix timestamp in ms)
             volume_at_signal REAL,
             strategy TEXT,
             status TEXT DEFAULT 'NEW',
@@ -144,28 +165,86 @@ def create_tables():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             symbol TEXT,
             entry_price REAL,
-            quantity REAL,
+            quantity REAL, -- Amount of base asset bought
             stop_loss REAL,
             take_profit REAL,
             status TEXT,
+            entry_time INTEGER, -- Unix timestamp in ms
+            exit_time INTEGER, -- Unix timestamp in ms
+            pnl_pct REAL, -- Percentage profit/loss
             FOREIGN KEY (symbol) REFERENCES symbols (symbol)
         )
     ''')
 
+    # Long-term klines table
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS long_term_klines (
+            symbol TEXT NOT NULL,
+            interval TEXT NOT NULL,  -- '1d', '1h', '4h'
+            timestamp INTEGER NOT NULL,
+            open REAL NOT NULL,
+            high REAL NOT NULL,
+            low REAL NOT NULL,
+            close REAL NOT NULL,
+            volume REAL NOT NULL,
+            PRIMARY KEY (symbol, interval, timestamp)
+        )
+    ''')
+    cursor.execute('''
+        CREATE INDEX IF NOT EXISTS idx_symbol_interval ON long_term_klines (symbol, interval)
+    ''')
+    
     conn.commit()
     conn.close()
-    seed_strategies() # Seed the strategies table with default values
+    seed_strategies()  # Seed the strategies table with default values
     logger.info("Database tables created successfully.")
+
+def create_sentiment_table():
+    """Creates the sentiment_daily table if it doesn't exist."""
+    conn = connect_db()
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS sentiment_daily (
+            symbol TEXT, date TEXT, social_volume REAL, sentiment_balance REAL,
+            PRIMARY KEY (symbol, date)
+        )
+    """)
+    conn.commit()
+    conn.close()
+    logger.info("Sentiment daily table created successfully.")
+
+def get_db_table_name_for_interval(interval: str, is_raw: bool = False) -> str:
+    """Maps an interval string to its corresponding database table name."""
+    if is_raw:
+        return "raw_klines"
+    
+    # Map API intervals to internal DB table names for enriched data
+    if interval == '60m' or interval == '1h':
+        return "klines_1h"
+    elif interval == '15m':
+        return "klines_15m"
+    elif interval == '5m':
+        return "klines_5m"
+    # Add other enriched tables if they are created (e.g., klines_1d for enriched daily)
+    else:
+        raise ValueError(f"Unsupported interval for enriched data: {interval}")
 
 def seed_strategies():
     """Seeds the strategies table with some default configurations."""
     conn = connect_db()
     cursor = conn.cursor()
     try:
+        # Removed duplicate signals table creation.
+        # Ensure the strategies table exists before seeding
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS strategies (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE NOT NULL, description TEXT, min_signals INTEGER DEFAULT 3, prob_threshold REAL DEFAULT 0.6, thresholds TEXT, risk_level TEXT DEFAULT 'MEDIUM'
+            )
+        ''')
         strategies_to_insert = [
-            ('HIGH_CONFIDENCE', 'Stricter with momentum/trend', 3, 0.4, '{"rsi_oversold": 35, "vol_mult": 2.0, "vol_spike": true, "trend_min": 0.5, "momentum_min": 0}', 'LOW'),
-            ('BALANCED', 'Balanced with momentum', 3, 0.5, '{"rsi_oversold": 40, "vol_mult": 1.8, "vol_spike": true, "trend_min": 0.3, "momentum_min": -0.5}', 'MEDIUM'),
-            ('AGGRESSIVE', 'Aggressive with light momentum', 3, 0.4, '{"rsi_oversold": 45, "vol_mult": 1.5, "vol_spike": true, "trend_min": 0.1, "momentum_min": -1.0}', 'HIGH')
+            ('HIGH_CONFIDENCE', 'Stricter with momentum/trend', 3, 0.4, '{"rsi_oversold": 35, "vol_mult": 2.0, "vol_spike": true, "trend_min": 0.5, "momentum_min": 0, "adx_threshold": 25}', 'LOW'),
+            ('BALANCED', 'Balanced with momentum', 3, 0.5, '{"rsi_oversold": 40, "vol_mult": 1.8, "vol_spike": true, "trend_min": 0.3, "momentum_min": -0.5, "adx_threshold": 25}', 'MEDIUM'),
+            ('AGGRESSIVE', 'Aggressive with light momentum', 3, 0.4, '{"rsi_oversold": 45, "vol_mult": 1.5, "vol_spike": true, "trend_min": 0.1, "momentum_min": -1.0, "adx_threshold": 25}', 'HIGH')
         ]
         cursor.executemany('''
             INSERT OR IGNORE INTO strategies (name, description, min_signals, prob_threshold, thresholds, risk_level)
@@ -198,7 +277,7 @@ def init_symbols_db():
                     'base_asset': sym['baseAsset'],
                     'quote_asset': sym['quoteAsset'],
                     'status': sym['status'],
-                    'date_added': datetime.utcnow(),
+                    'date_added': datetime.now(timezone.utc),
                     'is_active': 1
                 })
         
@@ -231,6 +310,123 @@ def get_all_symbols():
     conn.close()
     return symbols
 
+def save_raw_klines(symbol: str, interval: str, klines_data: List[tuple]):
+    """Saves a list of raw klines to the raw_klines table, ignoring duplicates."""
+    if not klines_data:
+        return
+
+    table_name = get_db_table_name_for_interval(interval, is_raw=True) # "raw_klines"
+    cols = ['symbol', 'interval', 'timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_volume']
+    placeholders = ','.join(['?' for _ in cols])
+    insert_sql = f'''
+        INSERT OR IGNORE INTO {table_name} ({','.join(cols)})
+        VALUES ({placeholders})
+    '''
+    
+    data_to_insert = [
+        (symbol, interval, int(k[0]), float(k[1]), float(k[2]), float(k[3]), float(k[4]), float(k[5]), int(k[6]), float(k[7]))
+        for k in klines_data
+    ]
+
+    conn = connect_db()
+    cursor = conn.cursor()
+    try:
+        cursor.executemany(insert_sql, data_to_insert)
+        conn.commit()
+        logger.debug(f"Saved {cursor.rowcount} raw {interval} klines for {symbol}.")
+    except sqlite3.Error as e:
+        logger.error(f"DB error saving raw {interval} klines for {symbol}: {e}")
+    finally:
+        conn.close()
+
+def fetch_raw_klines(symbol: str, interval: str, start_ts: int, end_ts: int) -> List[tuple]:
+    """Fetches raw klines from the raw_klines table within a specified time range."""
+    table_name = get_db_table_name_for_interval(interval, is_raw=True) # "raw_klines"
+    conn = connect_db()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(f"""
+            SELECT timestamp, open, high, low, close, volume, close_time, quote_volume 
+            FROM {table_name} 
+            WHERE symbol = ? AND interval = ? AND timestamp >= ? AND timestamp <= ?
+            ORDER BY timestamp ASC
+        """, (symbol, interval, start_ts, end_ts))
+        return cursor.fetchall()
+    except sqlite3.Error as e:
+        logger.error(f"DB error fetching raw {interval} klines for {symbol}: {e}")
+        return []
+    finally:
+        conn.close()
+
+def save_long_term_klines(symbol: str, interval: str, klines_data: List[tuple]):
+    """Saves a list of klines to the long_term_klines table, ignoring duplicates."""
+    if not klines_data:
+        return
+
+    # The klines_data from get_historical_data has 8 columns:
+    # timestamp, open, high, low, close, volume, close_time, quote_volume
+    # The long_term_klines table expects 8 columns:
+    # symbol, interval, timestamp, open, high, low, close, volume
+    data_to_insert = [
+        (symbol, interval, int(k[0]), float(k[1]), float(k[2]), float(k[3]), float(k[4]), float(k[5]))
+        for k in klines_data
+    ]
+
+    conn = connect_db()
+    cursor = conn.cursor()
+    try:
+        cursor.executemany("""
+            INSERT OR IGNORE INTO long_term_klines (symbol, interval, timestamp, open, high, low, close, volume)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, data_to_insert)
+        conn.commit()
+        logger.info(f"Saved/updated {cursor.rowcount} records in long_term_klines for {symbol} {interval}.")
+    except sqlite3.Error as e:
+        logger.error(f"DB error saving to long_term_klines for {symbol}: {e}")
+    finally:
+        conn.close()
+
+def save_sentiment_daily_data(symbol: str, df: pd.DataFrame):
+    """Saves daily sentiment data to the database."""
+    if df.empty:
+        return
+    
+    # Ensure 'date' column is in 'YYYY-MM-DD' format for the TEXT PRIMARY KEY
+    # Assuming df has 'datetime', 'social_volume', 'sentiment_balance'
+    df['date'] = df['datetime'].dt.strftime('%Y-%m-%d')
+    df_to_save = df[['symbol', 'date', 'social_volume', 'sentiment_balance']]
+    
+    conn = connect_db()
+    try:
+        # Use to_sql with if_exists='append' and the PRIMARY KEY constraint
+        # will handle upserting (inserting new or ignoring existing)
+        df_to_save.to_sql('sentiment_daily', conn, if_exists='append', index=False)
+        logger.debug(f"Saved {len(df_to_save)} sentiment records for {symbol}.")
+    except sqlite3.Error as e:
+        logger.error(f"DB error saving sentiment data for {symbol}: {e}")
+    finally:
+        conn.close()
+
+def get_sentiment_daily_data(symbol: str, days_back: int) -> pd.DataFrame:
+    """Retrieves daily sentiment data for a symbol from the database."""
+    conn = connect_db()
+    try:
+        from_date = (datetime.now(timezone.utc) - timedelta(days=days_back)).strftime('%Y-%m-%d')
+        query = """
+            SELECT date, social_volume, sentiment_balance
+            FROM sentiment_daily
+            WHERE symbol = ? AND date >= ?
+            ORDER BY date ASC
+        """
+        df = pd.read_sql_query(query, conn, params=(symbol, from_date))
+        df['date'] = pd.to_datetime(df['date'])
+        df.rename(columns={'date': 'datetime'}, inplace=True) # Rename back to datetime for consistency with san.get output
+        return df
+    except sqlite3.Error as e:
+        logger.error(f"DB error retrieving sentiment data for {symbol}: {e}")
+        return pd.DataFrame()
+    finally:
+        conn.close()
 def increment_klines_fail_count(symbol: str):
     """
     Increments the klines_fail_count for a given symbol.
@@ -271,7 +467,7 @@ def save_klines_by_interval(interval: str, enriched_klines: List[tuple], cols: L
     """
     if not enriched_klines:
         return
-
+    
     table_name = f'klines_{interval}'
     placeholders = ','.join(['?' for _ in cols])
     insert_sql = f'''
@@ -298,8 +494,8 @@ def save_signal(symbol: str, price: float, volume: float, strategy: str, metrics
     metrics = metrics or {}
     rsi = metrics.get('rsi')
     ma_diff_pct = metrics.get('ma_diff_pct')
-    indicators_str = ','.join(active_indicators) if active_indicators else ''
-    signal_time = datetime.utcnow()
+    indicators_str = ','.join(active_indicators) if active_indicators else '' # Changed from signal_time DATETIME to INTEGER
+    signal_time = datetime.now(timezone.utc)
 
     try:
         cursor.execute('''
@@ -321,7 +517,7 @@ def prune_old_klines(days_to_keep: int):
     conn = connect_db()
     cursor = conn.cursor()
     
-    cutoff_date = datetime.utcnow() - timedelta(days=days_to_keep)
+    cutoff_date = datetime.now(timezone.utc) - timedelta(days=days_to_keep)
     # Timestamps in the DB are in milliseconds
     cutoff_timestamp_ms = int(cutoff_date.timestamp() * 1000)
     tables_to_prune = ['klines_1h', 'klines_15m', 'klines_5m']
@@ -378,7 +574,7 @@ def insert_top_symbols(top_list: List[Dict[str, Any]]):
     """top_list: [{'symbol': 'BTCUSDT', 'prob_score': 0.85, 'rank': 1}, ...]"""
     conn = connect_db()
     cursor = conn.cursor()
-    ts = datetime.utcnow()
+    ts = datetime.now(timezone.utc)
     data = [(ts, item['symbol'], item['prob_score'], item['rank']) for item in top_list]
     try:
         cursor.executemany('''

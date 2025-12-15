@@ -6,3 +6,4 @@ requests>=2.31.0
 ccxt>=4.0.0
 schedule>=1.1.0
 tenacity>=8.0.0
+sanpy>=0.12.3

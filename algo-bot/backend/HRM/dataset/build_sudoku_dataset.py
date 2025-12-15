@@ -1,6 +1,4 @@
-# HRM/dataset/build_maze_dataset.py
 from typing import Optional
-import math
 import os
 import csv
 import json
@@ -11,43 +9,68 @@ from pydantic import BaseModel
 from tqdm import tqdm
 from huggingface_hub import hf_hub_download
 
-from common import PuzzleDatasetMetadata, dihedral_transform
-
-
-CHARSET = "# SGo"
+from common import PuzzleDatasetMetadata
 
 
 cli = ArgParser()
 
 
 class DataProcessConfig(BaseModel):
-    source_repo: str = "sapientinc/maze-30x30-hard-1k"
-    output_dir: str = "data/maze-30x30-hard-1k"
+    source_repo: str = "sapientinc/sudoku-extreme"
+    output_dir: str = "data/sudoku-extreme-full"
 
     subsample_size: Optional[int] = None
-    aug: bool = False
+    min_difficulty: Optional[int] = None
+    num_aug: int = 0
+
+
+def shuffle_sudoku(board: np.ndarray, solution: np.ndarray):
+    # Create a random digit mapping: a permutation of 1..9, with zero (blank) unchanged
+    digit_map = np.pad(np.random.permutation(np.arange(1, 10)), (1, 0))
+    
+    # Randomly decide whether to transpose.
+    transpose_flag = np.random.rand() < 0.5
+
+    # Generate a valid row permutation:
+    # - Shuffle the 3 bands (each band = 3 rows) and for each band, shuffle its 3 rows.
+    bands = np.random.permutation(3)
+    row_perm = np.concatenate([b * 3 + np.random.permutation(3) for b in bands])
+
+    # Similarly for columns (stacks).
+    stacks = np.random.permutation(3)
+    col_perm = np.concatenate([s * 3 + np.random.permutation(3) for s in stacks])
+
+    # Build an 81->81 mapping. For each new cell at (i, j)
+    # (row index = i // 9, col index = i % 9),
+    # its value comes from old row = row_perm[i//9] and old col = col_perm[i%9].
+    mapping = np.array([row_perm[i // 9] * 9 + col_perm[i % 9] for i in range(81)])
+
+    def apply_transformation(x: np.ndarray) -> np.ndarray:
+        # Apply transpose flag
+        if transpose_flag:
+            x = x.T
+        # Apply the position mapping.
+        new_board = x.flatten()[mapping].reshape(9, 9).copy()
+        # Apply digit mapping
+        return digit_map[new_board]
+
+    return apply_transformation(board), apply_transformation(solution)
 
 
 def convert_subset(set_name: str, config: DataProcessConfig):
     # Read CSV
-    all_chars = set()
-    grid_size = None
     inputs = []
     labels = []
     
-    with open(hf_hub_download(config.source_repo, f"{set_name}.csv", repo_type="dataset"), newline="") as csvfile:  # type: ignore
+    with open(hf_hub_download(config.source_repo, f"{set_name}.csv", repo_type="dataset"), newline="") as csvfile:
         reader = csv.reader(csvfile)
         next(reader)  # Skip header
         for source, q, a, rating in reader:
-            all_chars.update(q)
-            all_chars.update(a)
-
-            if grid_size is None:
-                n = int(len(q) ** 0.5)
-                grid_size = (n, n)
+            if (config.min_difficulty is None) or (int(rating) >= config.min_difficulty):
+                assert len(q) == 81 and len(a) == 81
                 
-            inputs.append(np.frombuffer(q.encode(), dtype=np.uint8).reshape(grid_size))
-            labels.append(np.frombuffer(a.encode(), dtype=np.uint8).reshape(grid_size))
+                inputs.append(np.frombuffer(q.replace('.', '0').encode(), dtype=np.uint8).reshape(9, 9) - ord('0'))
+                labels.append(np.frombuffer(a.encode(), dtype=np.uint8).reshape(9, 9) - ord('0'))
 
     # If subsample_size is specified for the training set,
     # randomly sample the desired number of examples.
@@ -59,6 +82,8 @@ def convert_subset(set_name: str, config: DataProcessConfig):
             labels = [labels[i] for i in indices]
 
     # Generate dataset
+    num_augments = config.num_aug if set_name == "train" else 0
+
     results = {k: [] for k in ["inputs", "labels", "puzzle_identifiers", "puzzle_indices", "group_indices"]}
     puzzle_id = 0
     example_id = 0
@@ -66,11 +91,17 @@ def convert_subset(set_name: str, config: DataProcessConfig):
     results["puzzle_indices"].append(0)
     results["group_indices"].append(0)
     
-    for inp, out in zip(tqdm(inputs), labels):
-        # Dihedral transformations for augmentation
-        for aug_idx in range(8 if (set_name == "train" and config.aug) else 1):
-            results["inputs"].append(dihedral_transform(inp, aug_idx))
-            results["labels"].append(dihedral_transform(out, aug_idx))
+    for orig_inp, orig_out in zip(tqdm(inputs), labels):
+        for aug_idx in range(1 + num_augments):
+            # First index is not augmented
+            if aug_idx == 0:
+                inp, out = orig_inp, orig_out
+            else:
+                inp, out = shuffle_sudoku(orig_inp, orig_out)
+
+            # Push puzzle (only single example)
+            results["inputs"].append(inp)
+            results["labels"].append(out)
             example_id += 1
             puzzle_id += 1
             
@@ -79,18 +110,13 @@ def convert_subset(set_name: str, config: DataProcessConfig):
             
         # Push group
         results["group_indices"].append(puzzle_id)
-            
-    # Char mappings
-    assert len(all_chars - set(CHARSET)) == 0
-    
-    char2id = np.zeros(256, np.uint8)
-    char2id[np.array(list(map(ord, CHARSET)))] = np.arange(len(CHARSET)) + 1
-
+        
     # To Numpy
     def _seq_to_numpy(seq):
-        arr = np.vstack([char2id[s.reshape(-1)] for s in seq])
+        arr = np.concatenate(seq).reshape(len(seq), -1)
         
-        return arr
+        assert np.all((arr >= 0) & (arr <= 9))
+        return arr + 1
     
     results = {
         "inputs": _seq_to_numpy(results["inputs"]),
@@ -103,8 +129,8 @@ def convert_subset(set_name: str, config: DataProcessConfig):
 
     # Metadata
     metadata = PuzzleDatasetMetadata(
-        seq_len=int(math.prod(grid_size)),  # type: ignore
-        vocab_size=len(CHARSET) + 1,  # PAD + Charset
+        seq_len=81,
+        vocab_size=10 + 1,  # PAD + "0" ... "9"
         
         pad_id=0,
         ignore_label_id=0,
