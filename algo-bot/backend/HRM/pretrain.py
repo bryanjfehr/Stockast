@@ -212,8 +212,14 @@ def perform_graceful_save(config: PretrainConfig, train_state: TrainState, train
         # Move tensors to CPU before saving to avoid CUDA errors during shutdown.
         # Since the process is exiting, in-place modification is acceptable.
         train_state.model.cpu()
-        if train_state.carry and isinstance(train_state.carry, dict):
-            train_state.carry = {k: v.cpu() for k, v in train_state.carry.items()}
+        if train_state.carry is not None:
+            if isinstance(train_state.carry, dict):
+                train_state.carry = {k: v.cpu() for k, v in train_state.carry.items()}
+            # Handle generic objects that might contain tensors
+            elif hasattr(train_state.carry, '__dict__'):
+                for attr, value in vars(train_state.carry).items():
+                    if isinstance(value, torch.Tensor):
+                        setattr(train_state.carry, attr, value.cpu())
 
         state_to_save = {
             'step': train_state.step,
@@ -497,7 +503,11 @@ def launch(hydra_config: DictConfig):
             print(f"[Rank {RANK}] Loading resume checkpoint from {resume_pt_path}")
             
             map_location = f'cuda:{RANK}' if torch.cuda.is_available() else 'cpu'
-            checkpoint = torch.load(resume_pt_path, map_location=map_location)
+            # In PyTorch >= 2.6, weights_only defaults to True for security.
+            # Since we are saving custom objects (like the 'carry' state),
+            # we must set weights_only=False to allow unpickling of these objects.
+            # This is safe as we are loading a checkpoint we created ourselves.
+            checkpoint = torch.load(resume_pt_path, map_location=map_location, weights_only=False)
             
             try:
                 train_state.model.load_state_dict(checkpoint['model_state_dict'])
@@ -512,9 +522,14 @@ def launch(hydra_config: DictConfig):
             train_state.step = checkpoint['step']
             train_state.carry = checkpoint['carry']
             if train_state.carry is not None:
-                # move carry to current device
-                train_state.carry = {k: v.to(map_location, non_blocking=True) for k, v in train_state.carry.items()}
-
+                # Move carry to current device. Handle both dict and object cases.
+                if isinstance(train_state.carry, dict):
+                    train_state.carry = {k: v.to(map_location, non_blocking=True) for k, v in train_state.carry.items()}
+                # Handle generic objects that might contain tensors
+                elif hasattr(train_state.carry, '__dict__'):
+                    for attr, value in vars(train_state.carry).items():
+                        if isinstance(value, torch.Tensor):
+                            setattr(train_state.carry, attr, value.to(map_location, non_blocking=True))
             train_loader.dataset._iters = checkpoint['puzzle_dataset_iters']
             wandb_run_id = checkpoint.get('wandb_run_id')
             
