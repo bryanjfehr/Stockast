@@ -4,6 +4,13 @@ import os
 import math
 import yaml
 import shutil
+import signal
+import sys
+
+# Global flag to prevent re-entry into the signal handler
+_SHUTDOWN_CALLED = False
+# Global flag to indicate that a graceful save should be performed by the main loop
+_SHOULD_SAVE_ON_EXIT = False
 
 import torch
 import torch.distributed as dist
@@ -16,7 +23,6 @@ import coolname
 import hydra
 import pydantic
 from omegaconf import DictConfig
-from adam_atan2 import AdamATan2
 
 from puzzle_dataset import PuzzleDataset, PuzzleDatasetConfig, PuzzleDatasetMetadata
 from utils.functions import load_model_class, get_model_source_path
@@ -34,6 +40,8 @@ class ArchConfig(pydantic.BaseModel):
 
     name: str
     loss: LossConfig
+    precision: Optional[str] = None
+    gradient_accumulation_steps: int = 1
 
 
 class PretrainConfig(pydantic.BaseModel):
@@ -49,6 +57,7 @@ class PretrainConfig(pydantic.BaseModel):
     lr: float
     lr_min_ratio: float
     lr_warmup_steps: int
+    lr_scheduler: str = "cosine"
 
     weight_decay: float
     beta1: float
@@ -64,6 +73,7 @@ class PretrainConfig(pydantic.BaseModel):
     checkpoint_path: Optional[str] = None
 
     # Extras
+    resume: bool = False
     seed: int = 0
     checkpoint_every_eval: bool = False
     eval_interval: Optional[int] = None
@@ -143,7 +153,7 @@ def create_model(config: PretrainConfig, train_metadata: PuzzleDatasetMetadata, 
 
             world_size=world_size
         ),
-        AdamATan2(
+        torch.optim.AdamW(
             model.parameters(),
 
             lr=0,  # Needs to be set by scheduler
@@ -187,6 +197,44 @@ def init_train_state(config: PretrainConfig, train_metadata: PuzzleDatasetMetada
     )
 
 
+def perform_graceful_save(config: PretrainConfig, train_state: TrainState, train_loader: DataLoader, resume_file_path: str, RANK: int, WORLD_SIZE: int, wandb_run_id: Optional[str]):
+    """
+    Performs the actual checkpoint saving and cleanup.
+    This should be called from the main loop, not directly from a signal handler.
+    """
+    print(f"\n[Rank {RANK}] Initiating graceful save from main loop.")
+
+    if RANK == 0 and config.checkpoint_path is not None:
+        os.makedirs(config.checkpoint_path, exist_ok=True)
+        resume_pt_path_for_save = os.path.join(config.checkpoint_path, "resume.pt")
+        print(f"[Rank 0] Saving resume checkpoint to {resume_pt_path_for_save}")
+        
+        # Move tensors to CPU before saving to avoid CUDA errors during shutdown.
+        # Since the process is exiting, in-place modification is acceptable.
+        train_state.model.cpu()
+        if train_state.carry and isinstance(train_state.carry, dict):
+            train_state.carry = {k: v.cpu() for k, v in train_state.carry.items()}
+
+        state_to_save = {
+            'step': train_state.step,
+            'carry': train_state.carry,
+            'model_state_dict': train_state.model.state_dict(),
+            'optimizers_state_dict': [opt.state_dict() for opt in train_state.optimizers],
+            'puzzle_dataset_iters': train_loader.dataset._iters, # type: ignore
+            'wandb_run_id': wandb_run_id
+        }
+        torch.save(state_to_save, resume_pt_path_for_save)
+
+        with open(resume_file_path, "w") as f:
+            f.write(config.checkpoint_path)
+        
+        print("[Rank 0] Resume state saved.")
+    
+    if WORLD_SIZE > 1: dist.barrier()
+    if wandb.run: wandb.finish()
+    if dist.is_initialized(): dist.destroy_process_group()
+    sys.exit(0) # Exit after saving and cleanup
+
 def save_train_state(config: PretrainConfig, train_state: TrainState):
     # FIXME: Only saved model.
     if config.checkpoint_path is None:
@@ -213,6 +261,11 @@ def train_batch(config: PretrainConfig, train_state: TrainState, batch: Any, glo
 
     # To device
     batch = {k: v.cuda() for k, v in batch.items()}
+
+    # The loss function expects labels to be broadcastable to the logits shape.
+    # This unsqueezes the labels tensor to make it compatible.
+    if "labels" in batch and batch["labels"].dim() == 1:
+        batch["labels"] = batch["labels"].unsqueeze(-1)
 
     # Init carry if it is None
     if train_state.carry is None:
@@ -277,6 +330,12 @@ def evaluate(config: PretrainConfig, train_state: TrainState, eval_loader: torch
         for set_name, batch, global_batch_size in eval_loader:
             # To device
             batch = {k: v.cuda() for k, v in batch.items()}
+
+            # The loss function expects labels to be broadcastable to the logits shape.
+            # This unsqueezes the labels tensor to make it compatible.
+            if "labels" in batch and batch["labels"].dim() == 1:
+                batch["labels"] = batch["labels"].unsqueeze(-1)
+
             with torch.device("cuda"):
                 carry = train_state.model.initial_carry(batch)  # type: ignore
 
@@ -361,6 +420,7 @@ def load_synced_config(hydra_config: DictConfig, rank: int, world_size: int) -> 
     if rank == 0:
         config = PretrainConfig(**hydra_config)  # type: ignore
 
+
         # Naming
         if config.project_name is None:
             config.project_name = f"{os.path.basename(config.data_path).capitalize()} ACT-torch"
@@ -391,7 +451,7 @@ def launch(hydra_config: DictConfig):
         WORLD_SIZE = dist.get_world_size()
 
         torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
-        
+
     # Load sync'ed config
     config = load_synced_config(hydra_config, rank=RANK, world_size=WORLD_SIZE)
 
@@ -404,18 +464,91 @@ def launch(hydra_config: DictConfig):
 
     assert config.epochs % train_epochs_per_iter == 0, "Eval interval must be a divisor of total epochs."
 
-    train_loader, train_metadata = create_dataloader(config, "train", test_set_mode=False, epochs_per_iter=train_epochs_per_iter, global_batch_size=config.global_batch_size, rank=RANK, world_size=WORLD_SIZE)
+    train_loader, train_metadata = create_dataloader(config, "train", rank=RANK, world_size=WORLD_SIZE, test_set_mode=False, epochs_per_iter=train_epochs_per_iter, global_batch_size=config.global_batch_size)
     eval_loader,  eval_metadata  = create_dataloader(config, "test", test_set_mode=True, epochs_per_iter=1, global_batch_size=config.global_batch_size, rank=RANK, world_size=WORLD_SIZE)
 
     # Train state
     train_state = init_train_state(config, train_metadata, world_size=WORLD_SIZE)
 
+    # Resume logic
+    wandb_run_id = None
+    resume_file_path = os.path.join(config.data_path, ".resume")
+    resume_info = {'should_resume': False, 'checkpoint_dir': None}
+
+    if RANK == 0 and config.resume:
+        if os.path.exists(resume_file_path):
+            resume_info['should_resume'] = True
+            with open(resume_file_path, "r") as f:
+                resume_checkpoint_dir = f.read().strip()
+            resume_info['checkpoint_dir'] = resume_checkpoint_dir
+        else:
+            print("`resume=True` but no resume file found. Starting new training.")
+
+    if WORLD_SIZE > 1:
+        broadcast_list = [resume_info]
+        dist.broadcast_object_list(broadcast_list, src=0)
+        resume_info = broadcast_list[0]
+    
+    if resume_info['should_resume']:
+        resume_checkpoint_dir = resume_info['checkpoint_dir']
+        resume_pt_path = os.path.join(resume_checkpoint_dir, "resume.pt")
+        
+        if os.path.exists(resume_pt_path):
+            print(f"[Rank {RANK}] Loading resume checkpoint from {resume_pt_path}")
+            
+            map_location = f'cuda:{RANK}' if torch.cuda.is_available() else 'cpu'
+            checkpoint = torch.load(resume_pt_path, map_location=map_location)
+            
+            try:
+                train_state.model.load_state_dict(checkpoint['model_state_dict'])
+            except RuntimeError:
+                # Handle torch.compile wrapper
+                print(f"[Rank {RANK}] Failed to load state_dict directly, trying to unwrap compiled model.")
+                train_state.model.load_state_dict({k.removeprefix("_orig_mod."): v for k, v in checkpoint['model_state_dict'].items()})
+
+            for opt, state_dict in zip(train_state.optimizers, checkpoint['optimizers_state_dict']):
+                opt.load_state_dict(state_dict)
+            
+            train_state.step = checkpoint['step']
+            train_state.carry = checkpoint['carry']
+            if train_state.carry is not None:
+                # move carry to current device
+                train_state.carry = {k: v.to(map_location, non_blocking=True) for k, v in train_state.carry.items()}
+
+            train_loader.dataset._iters = checkpoint['puzzle_dataset_iters']
+            wandb_run_id = checkpoint.get('wandb_run_id')
+            
+            config.checkpoint_path = resume_checkpoint_dir
+            
+            if RANK == 0:
+                os.remove(resume_file_path)
+                print("[Rank 0] Resume state loaded. Removed resume file.")
+        else:
+            if RANK == 0:
+                print(f"[Rank 0] Resume file found, but checkpoint {resume_pt_path} does not exist. Starting new training.")
+                os.remove(resume_file_path) # remove stale resume file
+
+    # Signal handler for graceful shutdown
+    def graceful_shutdown_handler(signum, frame):
+        global _SHUTDOWN_CALLED
+        global _SHOULD_SAVE_ON_EXIT # Declare global for assignment
+        if _SHUTDOWN_CALLED:
+            return
+        _SHUTDOWN_CALLED = True
+        _SHOULD_SAVE_ON_EXIT = True # Set the flag for the main loop
+
+        print(f"\n[Rank {RANK}] Caught signal {signum}. Setting save flag. Shutdown will occur on next iteration.")
+        # Do not exit here. Let the main loop handle the shutdown on the next iteration.
+
+    signal.signal(signal.SIGINT, graceful_shutdown_handler)
+    signal.signal(signal.SIGTERM, graceful_shutdown_handler)
+
     # Progress bar and logger
     progress_bar = None
     if RANK == 0:
-        progress_bar = tqdm.tqdm(total=train_state.total_steps)
+        progress_bar = tqdm.tqdm(total=train_state.total_steps, initial=train_state.step)
 
-        wandb.init(project=config.project_name, name=config.run_name, config=config.model_dump(), settings=wandb.Settings(_disable_stats=True))  # type: ignore
+        wandb.init(project=config.project_name, name=config.run_name, config=config.model_dump(), settings=wandb.Settings(_disable_stats=True), resume="allow" if wandb_run_id else None, id=wandb_run_id)  # type: ignore
         wandb.log({"num_params": sum(x.numel() for x in train_state.model.parameters())}, step=0)
         save_code_and_config(config)
 
@@ -424,6 +557,10 @@ def launch(hydra_config: DictConfig):
         print (f"[Rank {RANK}, World Size {WORLD_SIZE}]: Epoch {_iter_id * train_epochs_per_iter}")
 
         ############ Train Iter
+        if _SHOULD_SAVE_ON_EXIT:
+            # Check before starting a new iteration/epoch
+            perform_graceful_save(config, train_state, train_loader, resume_file_path, RANK, WORLD_SIZE, wandb_run_id)
+
         train_state.model.train()
         for set_name, batch, global_batch_size in train_loader:
             metrics = train_batch(config, train_state, batch, global_batch_size, rank=RANK, world_size=WORLD_SIZE)
@@ -431,6 +568,10 @@ def launch(hydra_config: DictConfig):
             if RANK == 0 and metrics is not None:
                 wandb.log(metrics, step=train_state.step)
                 progress_bar.update(train_state.step - progress_bar.n)  # type: ignore
+            
+            # Check after each batch
+            if _SHOULD_SAVE_ON_EXIT:
+                perform_graceful_save(config, train_state, train_loader, resume_file_path, RANK, WORLD_SIZE, wandb_run_id)
 
         ############ Evaluation
         train_state.model.eval()
@@ -442,12 +583,6 @@ def launch(hydra_config: DictConfig):
         ############ Checkpointing
         if RANK == 0 and (config.checkpoint_every_eval or (_iter_id == total_iters - 1)):
             save_train_state(config, train_state)
-
-    # finalize
-    if dist.is_initialized():
-        dist.destroy_process_group()
-    wandb.finish()
-
 
 if __name__ == "__main__":
     launch()

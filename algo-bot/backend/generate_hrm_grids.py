@@ -11,9 +11,11 @@ from db import create_tables
 RELIABLE_SYMBOLS = ["BTCUSDT", "ETHUSDT", "XRPUSDT", "LTCUSDT", "BCHUSDT", 
                     "ETCUSDT", "DOGEUSDT", "TRXUSDT", "BNBUSDT", "ATOMUSDT"]
 SAMPLES_PER_SYMBOL = 100
-WINDOW = 60
-GRID_H, GRID_W = 60, 60
-OUTPUT_DIR = "hrm_1000_grids"
+WINDOW = 40  # Reduced
+GRID_H, GRID_W = 40, 40  # 40x40
+CANDLE_ROWS = 28  # Top 70%
+VOL_ROWS = 12     # Bottom 30%
+OUTPUT_DIR = "hrm_40x40_1000k"  # New dir
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 def log_norm(series):
@@ -24,34 +26,35 @@ def log_norm(series):
 def render_grid(df_slice):
     grid = np.zeros((GRID_H, GRID_W), dtype=int)
     
-    if len(df_slice) < WINDOW: return grid
+    if len(df_slice) < WINDOW: 
+        return grid
     
     prices = df_slice[['open', 'high', 'low', 'close']].values[-WINDOW:]
     vols = df_slice['volume'].values[-WINDOW:]
     
-    price_highs = np.max(prices[:,1:3], axis=1)  # Daily highs for scale
-    price_norm = log_norm(np.concatenate([prices[:,1], prices[:,2]]))
+    # Normalize prices (high/low for scale) and volume separately
+    price_vals = np.concatenate([prices[:,1], prices[:,2]])  # Highs/lows
+    price_norm = log_norm(price_vals)
     vol_norm = log_norm(vols)
     
-    p_offset = 0
     for col in range(WINDOW):
         o, h, l, c = prices[col]
-        o_n = log_norm(np.array([o]))[0] if o > 0 else 0
-        h_n = log_norm(np.array([h]))[0]
-        l_n = log_norm(np.array([l]))[0]
-        c_n = log_norm(np.array([c]))[0]
+        # Individual norm per candle (preserves relative height)
+        candle_vals = np.array([o, h, l, c])
+        candle_norm = log_norm(candle_vals)
+        o_n, h_n, l_n, c_n = candle_norm
         
-        high_r = int(h_n * 39)
-        low_r = int(l_n * 39)
-        open_r = int(o_n * 39)
-        close_r = int(c_n * 39)
+        high_r = int(h_n * (CANDLE_ROWS - 1))
+        low_r = int(l_n * (CANDLE_ROWS - 1))
+        open_r = int(o_n * (CANDLE_ROWS - 1))
+        close_r = int(c_n * (CANDLE_ROWS - 1))
         
-        color = 3 if c >= o else 6  # Green/red
+        color = 3 if c >= o else 6
         grid[min(open_r, close_r):max(open_r, close_r)+1, col] = color
         grid[low_r:high_r+1, col] = 1  # Wick
         
-        vol_h = int(vol_norm[col] * 19)
-        grid[40:40 + vol_h + 1, col] = min(9, vol_h // 2 + 1)
+        vol_h = int(vol_norm[col] * (VOL_ROWS - 1))
+        grid[CANDLE_ROWS : CANDLE_ROWS + vol_h + 1, col] = min(9, vol_h // 2 + 1)
     
     return grid
 
@@ -113,7 +116,7 @@ def generate_100_samples():
     
     np.save(f"{OUTPUT_DIR}/all_grids.npy", np.array(all_grids))
     np.save(f"{OUTPUT_DIR}/all_labels.npy", np.array(all_labels))
-    logging.info(f"Generated 1000 varied 60x60 HRM grids (100/symbol)")
+    logging.info(f"Generated 1000 varied 40x40 HRM grids (100/symbol)")
 
 if __name__ == "__main__":
     create_tables()  # Ensure the long_term_klines table exists

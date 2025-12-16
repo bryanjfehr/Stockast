@@ -13,8 +13,8 @@ from common import PuzzleDatasetMetadata, dihedral_transform  # Reuse from HRM r
 cli = ArgParser()
 
 class DataProcessConfig(BaseModel):
-    input_dir: str = "hrm_1000_grids"  # Your generated dir
-    output_dir: str = "data/chart-60x60-1k"
+    input_dir: str = "../hrm_40x40_1000k"  # New dir
+    output_dir: str = "data/chart-40x40-1k"
     train_ratio: float = 0.9 # Use more for training
     aug: bool = True  # Dihedral + flips
 
@@ -75,7 +75,7 @@ def convert_dataset(config: DataProcessConfig):
         
         # Metadata
         metadata = PuzzleDatasetMetadata(
-            seq_len=60*60,  # 60x60
+            seq_len=40*40,  # 1600
             vocab_size=11,  # 0-9 + PAD
             pad_id=0,
             ignore_label_id=-100,  # For classification, use cross-entropy
