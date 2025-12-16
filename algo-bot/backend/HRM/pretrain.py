@@ -209,22 +209,21 @@ def perform_graceful_save(config: PretrainConfig, train_state: TrainState, train
         resume_pt_path_for_save = os.path.join(config.checkpoint_path, "resume.pt")
         print(f"[Rank 0] Saving resume checkpoint to {resume_pt_path_for_save}")
         
-        # Move tensors to CPU before saving to avoid CUDA errors during shutdown.
-        # Since the process is exiting, in-place modification is acceptable.
-        train_state.model.cpu()
-        if train_state.carry is not None:
-            if isinstance(train_state.carry, dict):
-                train_state.carry = {k: v.cpu() for k, v in train_state.carry.items()}
-            # Handle generic objects that might contain tensors
-            elif hasattr(train_state.carry, '__dict__'):
-                for attr, value in vars(train_state.carry).items():
-                    if isinstance(value, torch.Tensor):
-                        setattr(train_state.carry, attr, value.cpu())
+        # Create CPU-based copies of the state for saving. This is a safer pattern than
+        # modifying the live, GPU-based training state in-place, which can lead to
+        # unexpected performance degradation on resume, especially with torch.compile.
+        model_state_dict_cpu = {k: v.cpu() for k, v in train_state.model.state_dict().items()}
+        
+        carry_cpu = None
+        if train_state.carry is not None and isinstance(train_state.carry, dict):
+            carry_cpu = {k: v.cpu() for k, v in train_state.carry.items()}
+        else:
+            carry_cpu = train_state.carry # Fallback for non-dict or None carry
 
         state_to_save = {
             'step': train_state.step,
-            'carry': train_state.carry,
-            'model_state_dict': train_state.model.state_dict(),
+            'carry': carry_cpu,
+            'model_state_dict': model_state_dict_cpu,
             'optimizers_state_dict': [opt.state_dict() for opt in train_state.optimizers],
             'puzzle_dataset_iters': train_loader.dataset._iters, # type: ignore
             'wandb_run_id': wandb_run_id

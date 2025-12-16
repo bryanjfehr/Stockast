@@ -65,6 +65,36 @@ wandb login
 
 ## Run Experiments
 
+### Pausing and Resuming Training ⏸️▶️
+
+You can gracefully pause a training run and resume it later. This is useful for long training sessions on machines that might be interrupted.
+
+**To Pause:**
+1.  Press `Ctrl+C` in the terminal where the training is running.
+2.  The script will catch the signal, finish the current iteration, and save a `resume.pt` checkpoint in the run's checkpoint directory (e.g., `checkpoints/PROJECT_NAME/RUN_NAME/resume.pt`).
+3.  It will also create a `.resume` file in your `data_path` directory, which the resume logic uses to find the correct checkpoint.
+
+**To Resume:**
+1.  Re-run the *exact same* training command you used to start the run.
+2.  Add the `+resume=True` argument to the command line.
+
+The script will automatically detect the resume state and load the model, optimizers, and training progress from the checkpoint.
+
+**Example:**
+
+*   **Initial Training Command:**
+    ```bash
+    # Start training (single GPU, smaller batch size)
+    OMP_NUM_THREADS=8 python pretrain.py data_path=data/sudoku-extreme-1k-aug-1000 ...
+    ```
+    *(... training runs, then you press `Ctrl+C` ...)*
+
+*   **Resume Command:**
+    ```bash
+    # Resume training from the last checkpoint
+    OMP_NUM_THREADS=8 python pretrain.py data_path=data/sudoku-extreme-1k-aug-1000 ... +resume=True
+    ```
+
 ### Quick Demo: Sudoku Solver 💻🗲
 
 Train a master-level Sudoku AI capable of solving extremely difficult puzzles on a modern laptop GPU. 🧩
